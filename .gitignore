@@ -1,0 +1,5 @@
+.DS_Store
+__pycache__/
+*.pyc
+build_log*.txt
+server_log.txt
