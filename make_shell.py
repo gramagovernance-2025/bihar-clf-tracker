@@ -178,7 +178,14 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
 .weight-modal-actions{ display:flex; justify-content:space-between; gap:10px; margin-top:22px; }
 .weight-reset-btn{ appearance:none; cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; color:var(--ink-soft); background:var(--panel-alt); border:1px solid var(--line-strong); border-radius:999px; padding:8px 16px; }
 .weight-done-btn{ appearance:none; cursor:pointer; font-family:inherit; font-size:13px; font-weight:700; color:#fff; background:var(--primary); border:none; border-radius:999px; padding:8px 20px; }
-.donut-row{ display:flex; gap:18px; flex-wrap:wrap; }
+.donut-row{ display:flex; gap:18px; flex-wrap:wrap; justify-content:center; }
+/* minmax(0,1fr), not plain 1fr - a plain 1fr column can't shrink below its
+   content's natural width, so a wide table forces the whole grid (and page)
+   to overflow instead of letting the table's own .table-wrap scroll inside
+   its column; minmax(0,1fr) removes that floor. Stacks to one column on
+   narrow phones so each table gets the full width for its own scroll. */
+.statement-grid{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:24px; }
+@media (max-width:680px){ .statement-grid{ grid-template-columns:minmax(0,1fr); } }
 .donut-card{ width:150px; text-align:center; }
 .donut-card .dlabel{ font-size:12.5px; color:var(--ink-soft); margin-top:8px; min-height:2.4em; }
 .bar-list{ display:flex; flex-direction:column; gap:11px; }
@@ -715,7 +722,7 @@ function renderFinStatements(){
   <section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Balance Sheet']}">Balance Sheet</h2><span class="hint">${(f01.found && isCurrentSnapshot)?('as of '+f01.period):q.label}</span></div>
     <div class="panel">
       ${!f01.found ? `<p class="disclaimer">${ERR_MSG_JS.balance_sheet}</p>` : isCurrentSnapshot ? `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+      <div class="statement-grid">
         <div><h3 style="font-size:13.5px;margin:0 0 8px;">Assets</h3>${tableHtml([{label:'Line Item'},{label:'Amount',num:true}], assetRows)}</div>
         <div><h3 style="font-size:13.5px;margin:0 0 8px;">Liabilities &amp; Equity</h3>${tableHtml([{label:'Line Item'},{label:'Amount',num:true}], liabRows)}</div>
       </div>
@@ -725,7 +732,7 @@ function renderFinStatements(){
   <section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Receipts & Payments Statement']}">Receipts &amp; Payments Statement</h2><span class="hint">${q.label}</span></div>
     <div class="panel">
       ${q.is_real ? `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+      <div class="statement-grid">
         <div><h3 style="font-size:13.5px;margin:0 0 8px;">Receipts</h3>${tableHtml([{label:'Line Item'},{label:'Amount',num:true}], recvRows)}</div>
         <div><h3 style="font-size:13.5px;margin:0 0 8px;">Payments</h3>${tableHtml([{label:'Line Item'},{label:'Amount',num:true}], payRows)}</div>
       </div>` : `<p class="disclaimer">${ERR_MSG_JS.receipts_payments}</p>`}
