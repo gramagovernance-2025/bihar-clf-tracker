@@ -254,8 +254,12 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
 .nav-divider{ display:flex; align-items:center; gap:12px; margin:24px 0; color:var(--ink-soft); font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
 .nav-divider::before, .nav-divider::after{ content:""; flex:1; height:1px; background:var(--line); }
 .nav-id-row{ display:flex; gap:10px; }
-.nav-id-input{ flex:1; min-height:46px; font-family:inherit; font-size:15px; border:1px solid var(--line-strong); border-radius:8px; padding:10px 14px; color:var(--ink); }
-.nav-go-btn{ appearance:none; cursor:pointer; font-family:inherit; font-size:14px; font-weight:700; color:#fff; background:var(--primary); border:none; border-radius:8px; padding:0 22px; min-height:46px; }
+/* min-width:0 overrides the flex item's default min-width:auto, which
+   otherwise floors its shrink-width at the input's intrinsic content size -
+   without it, the row overflows its box on narrow phones instead of the
+   input shrinking to make room for the Go button. */
+.nav-id-input{ flex:1; min-width:0; min-height:46px; font-family:inherit; font-size:15px; border:1px solid var(--line-strong); border-radius:8px; padding:10px 14px; color:var(--ink); }
+.nav-go-btn{ appearance:none; cursor:pointer; font-family:inherit; font-size:14px; font-weight:700; color:#fff; background:var(--primary); border:none; border-radius:8px; padding:0 22px; min-height:46px; flex:none; }
 .nav-go-btn:hover{ opacity:.92; }
 .nav-error{ font-size:13px; color:#8a3226; background:var(--low-soft); border-radius:8px; padding:9px 12px; margin-top:12px; }
 .back-link{ display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:600; color:var(--primary); cursor:pointer; margin-bottom:14px; background:none; border:none; font-family:inherit; padding:0; }
