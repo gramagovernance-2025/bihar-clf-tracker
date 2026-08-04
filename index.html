@@ -103,6 +103,7 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
 .standing-card .label{ font-size:11.5px; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:8px; }
 .standing-card .big{ font-size:38px; font-weight:600; line-height:1; font-variant-numeric:tabular-nums; color:var(--primary); }
 .standing-card .big sup{ font-size:15px; vertical-align:super; }
+.standing-card .big .outof{ font-size:14px; font-weight:400; color:var(--ink-soft); margin-left:9px; vertical-align:middle; }
 .standing-card .sub{ font-size:13px; color:var(--ink-soft); margin-top:4px; }
 .track{ position:relative; height:8px; border-radius:999px; background:linear-gradient(to right,var(--primary-soft),var(--line)); margin-top:14px; }
 .track .fill{ position:absolute; left:0; top:0; bottom:0; border-radius:999px; background:var(--primary); opacity:.35; }
@@ -401,16 +402,22 @@ function tile(label, value, sub, cls, tip){
 // "45th out of 53 CLFs · 51st percentile" - rank leads, percentile follows;
 // falls back to just the percentile when no rank is available (composite/
 // derived scores with no real peer population to rank against).
-function pctlSubtext(rank, n, pctl){
-  const pctlPart = pctl!=null ? `${pctl}${ord(pctl)} percentile` : 'percentile';
-  if(rank==null || n==null) return pctlPart;
-  return `${rank}${ord(rank)} out of ${n} CLFs · ${pctlPart}`;
-}
-function standingCard(kind,big,subText,rankLine,labelText){
-  const known = big!==null && big!==undefined;
-  const pct = known ? big : 0;
-  return `<div class="standing-card ${kind}"><div class="label">${labelText}</div><div class="big serif">${known?big:'—'}<sup>${known?ord(big):''}</sup></div>
-    <div class="sub">${subText}</div><div class="track"><div class="fill" style="width:${pct}%"></div><div class="marker" style="left:${pct}%"></div></div>
+// Headline is the RANK ("2nd" + smaller "out of 64 CLFs" on the same line);
+// the percentile moves to its own smaller line below - a rank alone isn't
+// enough context on its own ("2nd" could mean 2nd of 3 or 2nd of 3,000), so
+// pairing it with the percentile keeps both readable at a glance. The
+// progress track still runs on the percentile's 0-100 scale (a rank has no
+// natural 0-100 equivalent), so pctl is still needed even when rank leads.
+function standingCard(kind,pctl,rank,n,rankLine,labelText){
+  const pctlKnown = pctl!==null && pctl!==undefined;
+  const rankKnown = rank!=null && n!=null;
+  const barPct = pctlKnown ? pctl : 0;
+  const headline = rankKnown
+    ? `${rank}<sup>${ord(rank)}</sup><span class="outof">out of ${n} CLFs</span>`
+    : (pctlKnown ? `${pctl}<sup>${ord(pctl)}</sup>` : '—');
+  const subText = pctlKnown ? `${pctl}${ord(pctl)} percentile` : (rankKnown ? '' : 'percentile');
+  return `<div class="standing-card ${kind}"><div class="label">${labelText}</div><div class="big serif">${headline}</div>
+    <div class="sub">${subText}</div><div class="track"><div class="fill" style="width:${barPct}%"></div><div class="marker" style="left:${barPct}%"></div></div>
     <div class="rank-line">${rankLine}</div></div>`;
 }
 function pctlRow(label, m, tip){
@@ -579,8 +586,8 @@ function renderAuditScores(){
     <div class="panel">
       <div class="tiles n2" style="margin-bottom:18px;">${tile('Grade', a.grade, null, 'big-value')}${tile('Total Audit Score', a.total_score+' / 100', null, 'big-value')}</div>
       <div class="standing-grid">
-        ${standingCard('district', a.district_pctl, pctlSubtext(a.district_rank, a.n_district, a.district_pctl), 'Score '+a.total_score+' / 100', 'Standing vs. District')}
-        ${standingCard('state', a.state_pctl, pctlSubtext(a.state_rank, a.n_state, a.state_pctl), 'Score '+a.total_score+' / 100', 'Standing vs. State')}
+        ${standingCard('district', a.district_pctl, a.district_rank, a.n_district, 'Score '+a.total_score+' / 100', 'Standing vs. District')}
+        ${standingCard('state', a.state_pctl, a.state_rank, a.n_state, 'Score '+a.total_score+' / 100', 'Standing vs. State')}
       </div>
     </div></section>
   <section><div class="section-head"><h2 class="serif">Category Breakdown</h2><span class="hint">normalised to % of max, colour-graded</span></div>
@@ -883,8 +890,8 @@ function renderVrfFundStanding(){
   const v = DATA.vrf;
   return `<section><div class="section-head"><h2 class="serif">Fund Standing</h2><span class="hint">composite of 5 fund-health metrics, member-weighted, percentile-ranked</span></div>
     <div class="panel"><div class="standing-grid">
-      ${standingCard('district', v.composite_dist_pctl, pctlSubtext(v.composite_dist_rank, v.n_district, v.composite_dist_pctl), 'Composite score '+v.composite, 'Within '+v.district_name+' District')}
-      ${standingCard('state', v.composite_state_pctl, pctlSubtext(v.composite_state_rank, v.n_state, v.composite_state_pctl), 'Composite score '+v.composite, 'Within Bihar (Statewide)')}
+      ${standingCard('district', v.composite_dist_pctl, v.composite_dist_rank, v.n_district, 'Composite score '+v.composite, 'Within '+v.district_name+' District')}
+      ${standingCard('state', v.composite_state_pctl, v.composite_state_rank, v.n_state, 'Composite score '+v.composite, 'Within Bihar (Statewide)')}
     </div>
     ${v.metrics.map(m=>pctlRow(m.label, m, TIPS['VRF Fund Health'])).join('')}
     </div></section>`;
@@ -1085,8 +1092,8 @@ function renderScoringOverall(){
       <div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button id="btn-open-weights" class="weight-btn">&#9881;&#65039; Choose Category Weights</button></div>
       <div class="tiles n1" style="margin-bottom:16px;">${tile('Overall Score', s.overall_score+' / 100', null, 'big-value')}</div>
       <div class="standing-grid">
-        ${standingCard('district', s.overall_district_score, pctlSubtext(s.overall_district_rank, s.overall_n_district, s.overall_district_score), 'Overall Score', 'Standing vs. District')}
-        ${standingCard('state', s.overall_score, pctlSubtext(s.overall_state_rank, s.overall_n_state, s.overall_score), 'Overall Score', 'Standing vs. State')}
+        ${standingCard('district', s.overall_district_score, s.overall_district_rank, s.overall_n_district, 'Overall Score', 'Standing vs. District')}
+        ${standingCard('state', s.overall_score, s.overall_state_rank, s.overall_n_state, 'Overall Score', 'Standing vs. State')}
       </div></div></section>
   <section><div class="section-head"><h2 class="serif">Category Summary</h2></div>
     <div class="panel">
