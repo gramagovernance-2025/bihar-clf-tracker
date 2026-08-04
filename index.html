@@ -111,6 +111,32 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
 .standing-card.state .track{ background:linear-gradient(to right,var(--gold-soft),var(--line)); }
 .standing-card.state .track .fill{ background:var(--gold); } .standing-card.state .track .marker{ background:var(--gold); }
 .standing-card .rank-line{ font-size:12px; color:var(--ink-soft); margin-top:10px; }
+
+/* customizable category-weight picker (modal) */
+.weight-btn{ appearance:none; cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; color:var(--primary); background:var(--primary-soft); border:1px solid var(--line-strong); border-radius:999px; padding:8px 16px; min-height:38px; }
+.weight-btn:hover{ opacity:.9; }
+.weight-modal-backdrop{ display:none; position:fixed; inset:0; background:rgba(30,35,32,0.45); z-index:100; align-items:center; justify-content:center; padding:20px; }
+.weight-modal-backdrop.open{ display:flex; }
+.weight-modal{ background:var(--panel); border-radius:14px; max-width:520px; width:100%; max-height:88vh; overflow-y:auto; padding:26px 28px; box-shadow:0 20px 60px rgba(0,0,0,0.25); }
+.weight-modal-head{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:4px; }
+.weight-modal-head h3{ font-size:19px; font-weight:600; margin:0; }
+.weight-modal-close{ appearance:none; border:none; background:none; cursor:pointer; font-size:22px; line-height:1; color:var(--ink-soft); padding:2px 6px; }
+.weight-modal-close:hover{ color:var(--ink); }
+.weight-modal-hint{ font-size:12.5px; color:var(--ink-soft); margin:2px 0 20px; }
+.weight-row{ margin-bottom:18px; }
+.weight-row-head{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; }
+.weight-row-head .wname{ font-size:13.5px; font-weight:600; }
+.weight-row-head .wpct{ font-size:14px; font-weight:700; color:var(--primary); font-variant-numeric:tabular-nums; }
+.weight-slider{ width:100%; accent-color:var(--primary); height:22px; }
+.weight-result{ margin-top:24px; padding:16px 18px; background:var(--panel-alt); border-radius:10px; border:1px solid var(--line); }
+.weight-result-row{ display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.weight-result-row:last-child{ margin-bottom:0; }
+.weight-result .wlabel{ font-size:12.5px; color:var(--ink-soft); }
+.weight-result .wval{ font-size:20px; font-weight:700; color:var(--primary); font-variant-numeric:tabular-nums; }
+.weight-result .wval.gold{ color:var(--gold); }
+.weight-modal-actions{ display:flex; justify-content:space-between; gap:10px; margin-top:22px; }
+.weight-reset-btn{ appearance:none; cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; color:var(--ink-soft); background:var(--panel-alt); border:1px solid var(--line-strong); border-radius:999px; padding:8px 16px; }
+.weight-done-btn{ appearance:none; cursor:pointer; font-family:inherit; font-size:13px; font-weight:700; color:#fff; background:var(--primary); border:none; border-radius:999px; padding:8px 20px; }
 .donut-row{ display:flex; gap:18px; flex-wrap:wrap; }
 .donut-card{ width:150px; text-align:center; }
 .donut-card .dlabel{ font-size:12.5px; color:var(--ink-soft); margin-top:8px; min-height:2.4em; }
@@ -130,6 +156,9 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
 .selectbar label{ font-size:12.5px; font-weight:600; color:var(--ink-soft); }
 .selectbar select{ min-height:40px; font-family:inherit; font-size:14px; color:var(--ink); background:var(--panel); border:1px solid var(--line-strong); border-radius:8px; padding:8px 12px; }
 .note-inline{ font-size:12.5px; color:var(--ink-soft); background:var(--primary-soft); border-radius:8px; padding:9px 12px; margin-bottom:14px; }
+.context-box{ font-size:13px; line-height:1.55; color:var(--ink-soft); background:var(--panel-alt); border:1px solid var(--line); border-radius:10px; padding:14px 18px; margin-bottom:22px; }
+.context-box b{ color:var(--ink); }
+.context-source{ font-size:11.5px; color:var(--ink-soft); opacity:.8; margin-top:8px; }
 .foot-note{ margin-top:24px; font-size:12.5px; color:var(--ink-soft); border-top:1px solid var(--line); padding-top:14px; }
 .disclaimer{ font-size:13px; color:var(--gold); background:var(--gold-soft); border-radius:8px; padding:10px 14px; margin-bottom:14px; }
 
@@ -269,6 +298,13 @@ let DATA = null;
 let FOOTNOTES = {};
 let TIPS = {};
 let ERR_MSG_JS = {};
+let CONTEXT = {};
+
+function contextBox(key){
+  const c = CONTEXT[key];
+  if(!c) return '';
+  return `<div class="context-box">${c}<div class="context-source">Data source: ${FOOTNOTES[key]||''}</div></div>`;
+}
 
 function fmtRs(v){ if(v===null||v===undefined) return '—'; const av=Math.abs(v);
   if(av>=10000000) return '₹'+(v/10000000).toFixed(2)+'Cr'; if(av>=100000) return '₹'+(v/100000).toFixed(2)+'L';
@@ -362,12 +398,13 @@ function tile(label, value, sub, cls, tip){
   const v = (value===null||value===undefined) ? '—' : value;
   return `<div class="tile ${cls||''}">${l}<div class="value">${v}</div>${sub?`<div class="sub">${sub}</div>`:''}</div>`;
 }
-// "98th percentile · out of 64 CLFs" -> "98th percentile · 2nd out of 64 CLFs" when a
-// rank is available; falls back to the plain phrasing when it isn't (composite/derived
-// scores with no real peer population to rank against, e.g. Scoring's category totals).
-function pctlSubtext(rank, n){
-  if(rank==null || n==null) return n!=null ? `percentile · out of ${n} CLFs` : 'percentile';
-  return `percentile · ${rank}${ord(rank)} out of ${n} CLFs`;
+// "45th out of 53 CLFs · 51st percentile" - rank leads, percentile follows;
+// falls back to just the percentile when no rank is available (composite/
+// derived scores with no real peer population to rank against).
+function pctlSubtext(rank, n, pctl){
+  const pctlPart = pctl!=null ? `${pctl}${ord(pctl)} percentile` : 'percentile';
+  if(rank==null || n==null) return pctlPart;
+  return `${rank}${ord(rank)} out of ${n} CLFs · ${pctlPart}`;
 }
 function standingCard(kind,big,subText,rankLine,labelText){
   const known = big!==null && big!==undefined;
@@ -380,13 +417,13 @@ function pctlRow(label, m, tip){
   const t = tip || TIPS[label];
   const lbl = t ? `<span class="tip" data-tip="${t}">${label}</span>` : label;
   if(!m) return `<div class="bar-row"><div class="blabel">${lbl}</div><div class="bar-track"></div><div class="bval" style="color:var(--ink-soft)">${ERR_MSG_JS.not_found}</div></div>`;
-  const dRank = m.district_rank!=null && m.n_district!=null ? ` (${m.district_rank}${ord(m.district_rank)} of ${m.n_district})` : '';
-  const sRank = m.state_rank!=null && m.n_state!=null ? ` (${m.state_rank}${ord(m.state_rank)} of ${m.n_state})` : '';
+  const dRank = m.district_rank!=null && m.n_district!=null ? `${m.district_rank}${ord(m.district_rank)} of ${m.n_district}` : ERR_MSG_JS.not_found;
+  const sRank = m.state_rank!=null && m.n_state!=null ? `${m.state_rank}${ord(m.state_rank)} of ${m.n_state}` : ERR_MSG_JS.not_found;
   return `<div class="metric-pctl-row" style="display:grid;grid-template-columns:190px 1fr 1fr;gap:16px;align-items:center;margin-bottom:12px;">
     <div style="font-size:13.5px;">${lbl}</div>
-    <div><div style="font-size:11px;color:var(--ink-soft);display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:var(--primary);font-weight:700;">DISTRICT</span><span>${withOrd(m.district_pctl)}${dRank}</span></div>
+    <div><div style="font-size:11px;color:var(--ink-soft);display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:var(--primary);font-weight:700;">DISTRICT</span><span>${dRank}</span></div>
       <div class="bar-track"><div class="fill" style="width:${m.district_pctl||0}%;background:var(--primary)"></div></div></div>
-    <div><div style="font-size:11px;color:var(--ink-soft);display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:var(--gold);font-weight:700;">STATE</span><span>${withOrd(m.state_pctl)}${sRank}</span></div>
+    <div><div style="font-size:11px;color:var(--ink-soft);display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:var(--gold);font-weight:700;">STATE</span><span>${sRank}</span></div>
       <div class="bar-track"><div class="fill" style="width:${m.state_pctl||0}%;background:var(--gold)"></div></div></div>
   </div>`;
 }
@@ -521,8 +558,8 @@ function renderOverviewMembers(){
 }
 function renderOverview(sub){
   document.getElementById('panel-overview').innerHTML =
-    (sub==='profile' ? renderOverviewProfile() : renderOverviewMembers()) +
-    `<div class="foot-note">Data source: ${FOOTNOTES.overview}</div>`;
+    contextBox('overview') +
+    (sub==='profile' ? renderOverviewProfile() : renderOverviewMembers());
   if(sub==='members'){
     const lvColors = ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)'];
     donutBlock('ring-livelihood', DATA.overview.livelihood_split, lvColors, {size:190, fmt:v=>v+'%'}).draw();
@@ -542,8 +579,8 @@ function renderAuditScores(){
     <div class="panel">
       <div class="tiles n2" style="margin-bottom:18px;">${tile('Grade', a.grade, null, 'big-value')}${tile('Total Audit Score', a.total_score+' / 100', null, 'big-value')}</div>
       <div class="standing-grid">
-        ${standingCard('district', a.district_pctl, pctlSubtext(a.district_rank, a.n_district), 'Score '+a.total_score+' / 100', 'Standing vs. District')}
-        ${standingCard('state', a.state_pctl, pctlSubtext(a.state_rank, a.n_state), 'Score '+a.total_score+' / 100', 'Standing vs. State')}
+        ${standingCard('district', a.district_pctl, pctlSubtext(a.district_rank, a.n_district, a.district_pctl), 'Score '+a.total_score+' / 100', 'Standing vs. District')}
+        ${standingCard('state', a.state_pctl, pctlSubtext(a.state_rank, a.n_state, a.state_pctl), 'Score '+a.total_score+' / 100', 'Standing vs. State')}
       </div>
     </div></section>
   <section><div class="section-head"><h2 class="serif">Category Breakdown</h2><span class="hint">normalised to % of max, colour-graded</span></div>
@@ -560,6 +597,14 @@ function renderAuditScores(){
         <div class="cat-group-items">${g.items.map(it=>gradedBar(it.label+' ('+(it.raw!==null?it.raw:'—')+'/'+it.max+')', it.pct)).join('')}</div>
       </div>`).join('')}</div></section>`;
 }
+// The raw irregularity text is usually a run-on numbered list ("1. ... 2.
+// ... 3. ..."); split on that pattern into one line per point for
+// readability, falling back to the plain text when there's no such pattern.
+function irregTextHtml(text){
+  const points = text.split(/\d+\.\s+/).map(s=>s.trim()).filter(Boolean);
+  if(points.length <= 1) return `<p class="desc" style="max-width:none;">${text}</p>`;
+  return `<ul style="margin:0;padding-left:20px;">${points.map(p=>`<li style="margin-bottom:6px;font-size:12.5px;color:var(--ink-soft);line-height:1.5;">${p}</li>`).join('')}</ul>`;
+}
 function renderAuditIrreg(){
   const a = DATA.audit;
   if(!a.found) return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Irregularity Flag']}">Financial Irregularities</h2></div>
@@ -571,7 +616,7 @@ function renderAuditIrreg(){
   const catsBlock = (a.issue_flagged && a.irreg_categories && a.irreg_categories.length) ?
     `<div class="pills tip" data-tip="${TIPS['Type of Irregularity']}" style="margin-top:14px;">${a.irreg_categories.map(c=>`<span class="pill on">${c}</span>`).join('')}</div>` : '';
   const textBlock = (a.issue_flagged && a.irreg_text) ?
-    `<p class="desc" style="max-width:none;margin-top:14px;padding:12px 14px;background:var(--panel-alt);border-radius:8px;border:1px solid var(--line);">"${a.irreg_text}"</p>` : '';
+    `<div style="margin-top:14px;padding:12px 14px;background:var(--panel-alt);border-radius:8px;border:1px solid var(--line);">${irregTextHtml(a.irreg_text)}</div>` : '';
   return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Irregularity Flag']}">Financial Irregularities</h2><span class="hint">Q4 only</span></div>
     <div class="panel"><p class="flag-headline ${cls}">${txt}</p>
       ${catsBlock}${textBlock}
@@ -580,36 +625,48 @@ function renderAuditIrreg(){
 }
 function renderAudit(){
   document.getElementById('panel-audit').innerHTML =
-    renderAuditScores() + renderAuditIrreg() +
-    `<div class="foot-note">Data source: ${FOOTNOTES.audit}</div>`;
+    contextBox('audit') +
+    renderAuditScores() + renderAuditIrreg();
   if(DATA.audit.found) DATA.audit.category_breakdown.forEach((c,i)=> drawRing('cat-ring-'+i, c.pct/100, grade(c.pct)));
 }
 
 let finQtrIdx = 0;
-const F01_COLORS = ['var(--gold)','var(--primary)','#5B8AA6'];
 const RC_COLORS = ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)','#9C7FB0','#B08968','#6B9E78','#C97B63'];
 function renderFinSummary(){
   const f = DATA.financial; const q = f.quarters[finQtrIdx]; const f01 = f.f01;
   const isCurrentSnapshot = (finQtrIdx === f.quarters.length - 1);
-  const capDonut = (f01.found && isCurrentSnapshot) ? donutBlock('ring-capital', f01.capital_composition, F01_COLORS, {size:140, fmt:v=>v+'%'}) : null;
+  // "Suspense Amount" is an unreconciled accounting placeholder, not a real
+  // asset/capital source - relabeled for the donut/legend/hover so it doesn't
+  // read as a normal category (the Statements-tab table keeps the plain name).
+  const assetsForDonut = f01.found ? Object.fromEntries(Object.entries(f01.assets).filter(([k])=>k!=='Total Assets').map(([k,v])=>[k==='Suspense Amount'?'Suspense Amount (unreconciled)':k, v])) : null;
+  const liabForDonut = f01.found ? Object.fromEntries(Object.entries(f01.liabilities).filter(([k])=>k!=='Total Equity & Liabilities').map(([k,v])=>[k==='Suspense Amount'?'Suspense Amount (unreconciled)':k, v])) : null;
+  const assetsDonut = (f01.found && isCurrentSnapshot && assetsForDonut) ? donutBlock('ring-assets', assetsForDonut, RC_COLORS, {size:150}) : null;
+  const liabDonut = (f01.found && isCurrentSnapshot && liabForDonut) ? donutBlock('ring-liabilities', liabForDonut, RC_COLORS, {size:150}) : null;
+  const gapKnown = f01.balance_gap_rs!=null;
+  const gapVal = gapKnown ? (f01.balance_gap_rs>=0?'+':'−')+fmtRs(Math.abs(f01.balance_gap_rs)) : '—';
   const f01Block = !f01.found ? `
     <section><div class="section-head"><h2 class="serif">Balance Sheet</h2></div>
       <div class="panel"><p class="disclaimer">${ERR_MSG_JS.balance_sheet}</p></div></section>` :
     isCurrentSnapshot ? `
     <section><div class="section-head"><h2 class="serif">Balance Sheet</h2><span class="hint">as of ${f01.period}</span></div>
       <div class="panel"><div class="tiles n4">
-        ${tile('Books Balance Check', f01.balance_gap_pct!=null?fmtF(f01.balance_gap_pct,2)+'% gap':'—', 'Assets vs. Liabilities+Equity', f01.balance_gap_pct!=null&&f01.balance_gap_pct!==0?'neg':'')}
+        ${tile('Books Balance Check', gapVal, 'Assets − Liabilities+Equity', gapKnown&&f01.balance_gap_rs!==0?'neg':'')}
         ${tile('Liquidity Ratio', f01.liquidity_ratio!=null?f01.liquidity_ratio+'%':'—')}
         ${tile('Fund Deployment Ratio', f01.deployment_ratio!=null?f01.deployment_ratio+'%':'—')}
         ${tile('Surplus / Deficit', f01.surplus_pct!=null?(f01.surplus_pct>=0?'+':'')+f01.surplus_pct+'%':'—', null, f01.surplus_pct!=null&&f01.surplus_pct<0?'neg':'')}
       </div>
-      <div class="section-head" style="margin:18px 0 10px;"><h3 style="font-size:14px;margin:0;" class="tip" data-tip="${TIPS['Where the Fund Came From']}">Where the Fund Came From</h3></div>
-      ${capDonut.html}
+      <div style="display:flex;gap:24px;flex-wrap:wrap;justify-content:center;margin-top:18px;">
+        <div><p class="hint" style="text-align:center;margin-bottom:8px;" data-tip="${TIPS['Assets Composition']}">Assets</p>${assetsDonut?assetsDonut.html:''}</div>
+        <div><p class="hint" style="text-align:center;margin-bottom:8px;" data-tip="${TIPS['Liabilities Composition']}">Liabilities &amp; Equity</p>${liabDonut?liabDonut.html:''}</div>
+      </div>
       </div></section>` :
     `<section><div class="section-head"><h2 class="serif">Balance Sheet</h2></div>
       <div class="panel"><p class="disclaimer">Balance sheet not available for this quarter — only exported as of ${f01.period}.</p></div></section>`;
-  const rc = q.receipts_full ? Object.fromEntries(Object.entries(q.receipts_full).filter(([k])=>k!=='Total Receipts')) : null;
-  const pc = q.payments_full ? Object.fromEntries(Object.entries(q.payments_full).filter(([k])=>k!=='Total Payments')) : null;
+  // Opening/Closing Balance is carried-over cash position, not real flow this
+  // quarter - excluded from the composition donuts (kept in the full
+  // statement table on the Statements tab, where it belongs).
+  const rc = q.receipts_full ? Object.fromEntries(Object.entries(q.receipts_full).filter(([k])=>k!=='Total Receipts'&&k!=='Opening Balance')) : null;
+  const pc = q.payments_full ? Object.fromEntries(Object.entries(q.payments_full).filter(([k])=>k!=='Total Payments'&&k!=='Closing Balance')) : null;
   const rDonut = rc ? donutBlock('ring-receipts', rc, RC_COLORS, {size:150}) : null;
   const pDonut = pc ? donutBlock('ring-payments', pc, RC_COLORS, {size:150}) : null;
   const html = f01Block + `
@@ -630,7 +687,7 @@ function renderFinSummary(){
       ${tile("This Quarter's Pending Loans", fmtRs(q.qtr_pending), null, q.qtr_pending>0?'neg':'')}
       ${tile('Capacity to Meet Demand', q.capacity_ratio!==null?q.capacity_ratio.toFixed(1)+'×':'—', null, q.capacity_ratio===0?'neg':'')}
     </div>` : `<p class="disclaimer">${ERR_MSG_JS.transactions}</p>`}</div></section>`;
-  return { html, capDonut, rDonut, pDonut };
+  return { html, assetsDonut, liabDonut, rDonut, pDonut };
 }
 function renderFinStatements(){
   const f = DATA.financial; const q = f.quarters[finQtrIdx]; const f01 = f.f01;
@@ -647,8 +704,7 @@ function renderFinStatements(){
         <div><h3 style="font-size:13.5px;margin:0 0 8px;">Assets</h3>${tableHtml([{label:'Line Item'},{label:'Amount',num:true}], assetRows)}</div>
         <div><h3 style="font-size:13.5px;margin:0 0 8px;">Liabilities &amp; Equity</h3>${tableHtml([{label:'Line Item'},{label:'Amount',num:true}], liabRows)}</div>
       </div>
-      <p class="hint" style="margin-top:14px;">Assets and Liabilities+Equity are reported separately and needn't sum to the same figure line-by-line — the Books Balance Check on the Summary tab compares their two totals directly.</p>
-      <div style="margin-top:18px;"><h3 style="font-size:13.5px;margin:0 0 8px;">Capital Composition</h3>${tableHtml([{label:'Source'},{label:'Share',num:true}], Object.entries(f01.capital_composition).map(([k,v])=>[k, v!=null?v+'%':'—']))}</div>` :
+      <p class="hint" style="margin-top:14px;">Assets and Liabilities+Equity are reported separately and needn't sum to the same figure line-by-line — the Books Balance Check on the Summary tab compares their two totals directly.</p>` :
         `<p class="disclaimer">Not available for this quarter — only exported as of ${f01.period}.</p>`}
     </div></section>
   <section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Receipts & Payments Statement']}">Receipts &amp; Payments Statement</h2><span class="hint">${q.label}</span></div>
@@ -668,10 +724,11 @@ function renderFinancial(sub){
   if(sub==='summary'){ const r = renderFinSummary(); body = r.html; summaryDraws = r; }
   else { body = renderFinStatements(); }
   document.getElementById('panel-financial').innerHTML =
-    dropdown + body + `<div class="foot-note">Data source: ${FOOTNOTES.financial}</div>`;
+    contextBox('financial') + dropdown + body;
   document.getElementById('qtr-select').addEventListener('change', e=>{ finQtrIdx=+e.target.value; renderFinancial(sub); });
   if(sub==='summary' && summaryDraws){
-    if(summaryDraws.capDonut) summaryDraws.capDonut.draw();
+    if(summaryDraws.assetsDonut) summaryDraws.assetsDonut.draw();
+    if(summaryDraws.liabDonut) summaryDraws.liabDonut.draw();
     if(summaryDraws.rDonut) summaryDraws.rDonut.draw();
     if(summaryDraws.pDonut) summaryDraws.pDonut.draw();
   }
@@ -826,8 +883,8 @@ function renderVrfFundStanding(){
   const v = DATA.vrf;
   return `<section><div class="section-head"><h2 class="serif">Fund Standing</h2><span class="hint">composite of 5 fund-health metrics, member-weighted, percentile-ranked</span></div>
     <div class="panel"><div class="standing-grid">
-      ${standingCard('district', v.composite_dist_pctl, pctlSubtext(v.composite_dist_rank, v.n_district), 'Composite score '+v.composite, 'Within '+v.district_name+' District')}
-      ${standingCard('state', v.composite_state_pctl, pctlSubtext(v.composite_state_rank, v.n_state), 'Composite score '+v.composite, 'Within Bihar (Statewide)')}
+      ${standingCard('district', v.composite_dist_pctl, pctlSubtext(v.composite_dist_rank, v.n_district, v.composite_dist_pctl), 'Composite score '+v.composite, 'Within '+v.district_name+' District')}
+      ${standingCard('state', v.composite_state_pctl, pctlSubtext(v.composite_state_rank, v.n_state, v.composite_state_pctl), 'Composite score '+v.composite, 'Within Bihar (Statewide)')}
     </div>
     ${v.metrics.map(m=>pctlRow(m.label, m, TIPS['VRF Fund Health'])).join('')}
     </div></section>`;
@@ -912,11 +969,11 @@ function drawVrfLineChart(key){ if(key==='interest'||key==='corpus') drawVrfScen
 
 function renderVRF(sub){
   if(!DATA.vrf.found){
-    document.getElementById('panel-vrf').innerHTML = `<section><div class="panel"><p class="disclaimer">${ERR_MSG_JS.vrf}</p></div></section>`;
+    document.getElementById('panel-vrf').innerHTML = contextBox('vrf') + `<section><div class="panel"><p class="disclaimer">${ERR_MSG_JS.vrf}</p></div></section>`;
     return;
   }
   const fn = {kpi: renderVrfKpi, vobreak: renderVrfVO, bkrank: renderVrfBK, forecasts: renderVrfForecasts}[sub];
-  document.getElementById('panel-vrf').innerHTML = fn() + `<div class="foot-note">Data source: ${FOOTNOTES.vrf}</div>`;
+  document.getElementById('panel-vrf').innerHTML = contextBox('vrf') + fn();
   if(sub==='kpi'){
     const v = DATA.vrf;
     const savPct = v.expected_savings ? Math.min(v.total_savings/v.expected_savings,1) : 0;
@@ -959,25 +1016,25 @@ function emptyYearNote(domainKey){
 function renderVprpEnt(){
   const y = DATA.vprp.years[vprpYear];
   if(!y || !y.n_demands) return emptyYearNote('vprp_ent');
-  const pendingNote = vprpYear===2025 ? ` — shown as <b>pending</b>, not 0%, since this year is too recent to have been processed` : '';
+  const accessedNote = vprpYear===2025 ? ` — this year is recent, so accessed status may not be fully updated yet` : '';
   const schemeRows = (y.by_scheme||[]).map(s=>{
-    const tds = `<td>${s.scheme}</td><td class="num">${fmtNum(s.demanded)}</td><td class="num">${vprpYear===2025?'<i>pending</i>':fmtNum(s.accessed)}</td>`;
+    const tds = `<td>${s.scheme}</td><td class="num">${fmtNum(s.demanded)}</td>`;
     let extra = '';
     if(s.raw_scheme==='state-specific' && y.state_scheme_breakdown){
-      const subRows = Object.entries(y.state_scheme_breakdown).map(([k,v])=>`<tr><td style="padding-left:28px;color:var(--ink-soft);">${k}</td><td class="num" colspan="2">${fmtNum(v)}</td></tr>`).join('');
-      extra = `<tr><td colspan="3" style="padding:2px 0 8px 10px;"><table style="width:100%;"><tbody>${subRows}</tbody></table></td></tr>`;
+      const subRows = Object.entries(y.state_scheme_breakdown).map(([k,v])=>`<tr><td style="padding-left:28px;color:var(--ink-soft);">${k}</td><td class="num">${fmtNum(v)}</td></tr>`).join('');
+      extra = `<tr><td colspan="2" style="padding:2px 0 8px 10px;"><table style="width:100%;"><tbody>${subRows}</tbody></table></td></tr>`;
     }
     return `<tr>${tds}</tr>${extra}`;
   }).join('');
   return `<section><div class="section-head"><h2 class="serif">Entitlements</h2></div>
     <div class="panel">
       <div class="tiles n3" style="margin-bottom:16px;">
-        ${tile('Total Entitlement Demands', fmtNum(y.n_demands))}
-        ${tile('Schemes Accessed', vprpYear===2025?'—':fmtNum(y.accessed))}
-        ${tile('Schemes Still Pending', vprpYear===2025?fmtNum(y.n_demands):fmtNum(y.pending))}
+        ${tile('Number of People Requesting', fmtNum(y.n_demands))}
+        ${tile('% of Job Cards Accessed', fmtPct(y.pct_nrega_accessed), vprpYear===2025?'recent year, may be incomplete':null)}
+        ${tile('Non-NREGA Schemes Requested', fmtNum(y.n_other_schemes), 'distinct scheme types')}
       </div>
-      ${y.by_scheme ? `<p class="hint tip" style="margin-bottom:8px;" data-tip="${TIPS['Demand & Access by Scheme']}"><b>Demand &amp; Access by Scheme</b>${pendingNote}</p>
-        <div class="table-wrap"><table><thead><tr><th>Scheme</th><th class="num">Demanded</th><th class="num">Accessed</th></tr></thead><tbody>${schemeRows}</tbody></table></div>` : ''}
+      ${y.by_scheme ? `<p class="hint tip" style="margin-bottom:8px;" data-tip="${TIPS['Demand & Access by Scheme']}"><b>Demand by Scheme</b>${accessedNote}</p>
+        <div class="table-wrap"><table><thead><tr><th>Scheme</th><th class="num">Demanded</th></tr></thead><tbody>${schemeRows}</tbody></table></div>` : ''}
     </div></section>`;
 }
 function renderVprpPgsrd(){
@@ -1010,7 +1067,7 @@ function renderVprpSdp(){
 function renderVPRP(sub){
   const y = DATA.vprp.years[vprpYear];
   const body = sub==='entitlements' ? renderVprpEnt() : sub==='pgsrd' ? renderVprpPgsrd() : renderVprpSdp();
-  document.getElementById('panel-vprp').innerHTML = yearDropdown() + body + `<div class="foot-note">Data source: ${FOOTNOTES.vprp}</div>`;
+  document.getElementById('panel-vprp').innerHTML = contextBox('vprp') + yearDropdown() + body;
   document.getElementById('yr-select').addEventListener('change', e=>{ vprpYear=+e.target.value; renderVPRP(sub); });
   if(sub==='pgsrd' && y && y.pgsrd_type_split) donutBlock('ring-pgsrd-type', y.pgsrd_type_split, PGSRD_COLORS, {size:150, fmt:v=>v+'%'}).draw();
   if(sub==='sdp' && y && y.sdp_sector) donutBlock('ring-sdp-sector', y.sdp_sector, SDP_COLORS, {size:150, fmt:v=>v+'%'}).draw();
@@ -1023,12 +1080,13 @@ function renderScoringOverall(){
   const cats = Object.entries(s.categories);
   const worst = cats.filter(([k,v])=> v.score!==null && v.score<50);
   const attnSentence = worst.length ? `<p class="callout-attn">Your CLF needs to pay the most attention to ${catListPhrase(worst.map(([k])=>k))}.</p>` : '';
-  return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Overall Score']}">Overall Score</h2><span class="hint">equal-weighted average across every individual item, pooled across all 5 categories</span></div>
+  return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Overall Score']}">Overall Score</h2><span class="hint">equal weight across all 5 categories by default - customize below</span></div>
     <div class="panel">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button id="btn-open-weights" class="weight-btn">&#9881;&#65039; Choose Category Weights</button></div>
       <div class="tiles n1" style="margin-bottom:16px;">${tile('Overall Score', s.overall_score+' / 100', null, 'big-value')}</div>
       <div class="standing-grid">
-        ${standingCard('district', s.overall_district_score, pctlSubtext(s.overall_district_rank, s.overall_n_district), 'Overall Score', 'Standing vs. District')}
-        ${standingCard('state', s.overall_score, pctlSubtext(s.overall_state_rank, s.overall_n_state), 'Overall Score', 'Standing vs. State')}
+        ${standingCard('district', s.overall_district_score, pctlSubtext(s.overall_district_rank, s.overall_n_district, s.overall_district_score), 'Overall Score', 'Standing vs. District')}
+        ${standingCard('state', s.overall_score, pctlSubtext(s.overall_state_rank, s.overall_n_state, s.overall_score), 'Overall Score', 'Standing vs. State')}
       </div></div></section>
   <section><div class="section-head"><h2 class="serif">Category Summary</h2></div>
     <div class="panel">
@@ -1053,14 +1111,126 @@ function renderScoringByCategory(){
     <section><div class="section-head"><h2 class="serif">${catName}</h2><span class="hint"><b>Score: ${cat.score!==null?cat.score+'/100':ERR_MSG_JS.not_found}</b></span></div>
       <div class="panel">${cat.metrics.map(([label,m])=>pctlRow(label, m, catName==='VRF Fund Health'?TIPS['VRF Fund Health']:undefined)).join('')}</div></section>`).join('');
 }
+// ============================================================================
+// Customizable category weights. The recomputed score itself needs only this
+// CLF's own category scores (already in DATA); a rank against other CLFs
+// needs everyone else's category scores too, which don't exist anywhere in
+// this CLF's own JSON - data/scoring_summary.json (a compact, statewide,
+// category-scores-only file) is fetched once, lazily, on first open, and
+// cached like every other fetch in this app.
+// ============================================================================
+const WEIGHT_CATS = ['Fund Utilization & Loan Activity', 'Financial Health', 'VRF Fund Health', 'Governance & Compliance', 'Welfare and Livelihood'];
+let categoryWeights = null;
+let scoringSummaryCache = null;
+
+function currentCategoryScores(){
+  const s = currentScoring();
+  const out = {};
+  WEIGHT_CATS.forEach(cat=>{ out[cat] = (s.categories[cat] && s.categories[cat].score!=null) ? s.categories[cat].score : null; });
+  return out;
+}
+function computeWeightedScore(catScores, weights){
+  let num = 0, den = 0;
+  WEIGHT_CATS.forEach(cat=>{
+    if(catScores[cat] != null){ num += weights[cat] * catScores[cat]; den += weights[cat]; }
+  });
+  return den > 0 ? num/den : null;
+}
+async function ensureScoringSummary(){
+  if(!scoringSummaryCache) scoringSummaryCache = await fetchJson('data/scoring_summary.json');
+  return scoringSummaryCache;
+}
+function weightModalHtml(){
+  return `<div class="weight-modal-backdrop" id="weight-modal-backdrop">
+    <div class="weight-modal">
+      <div class="weight-modal-head"><h3>Choose Category Weights</h3><button class="weight-modal-close" id="btn-close-weights">&times;</button></div>
+      <p class="weight-modal-hint">Drag each slider to change how much that category counts toward the Overall Score, for the quarter currently selected on this tab. Weights are relative to each other, not fixed percentages - move any slider and the rest adjust automatically.</p>
+      <div id="weight-rows"></div>
+      <div class="weight-result" id="weight-result"></div>
+      <div class="weight-modal-actions">
+        <button class="weight-reset-btn" id="btn-reset-weights">Reset to Equal Weights</button>
+        <button class="weight-done-btn" id="btn-done-weights">Done</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderWeightRows(){
+  const total = WEIGHT_CATS.reduce((a,c)=>a+categoryWeights[c],0) || 1;
+  document.getElementById('weight-rows').innerHTML = WEIGHT_CATS.map(cat=>{
+    const pct = Math.round(categoryWeights[cat]/total*100);
+    return `<div class="weight-row">
+      <div class="weight-row-head"><span class="wname">${cat}</span><span class="wpct">${pct}%</span></div>
+      <input type="range" min="0" max="100" value="${categoryWeights[cat]}" class="weight-slider" data-cat="${cat}">
+    </div>`;
+  }).join('');
+  document.querySelectorAll('.weight-slider').forEach(el=>{
+    el.addEventListener('input', e=>{ categoryWeights[e.target.dataset.cat] = +e.target.value; renderWeightRows(); renderWeightResult(); });
+  });
+}
+let weightRequestId = 0;
+async function renderWeightResult(){
+  const myRequestId = ++weightRequestId;
+  const catScores = currentCategoryScores();
+  const myScore = computeWeightedScore(catScores, categoryWeights);
+  const scoreHtml = myScore!=null ? Math.round(myScore)+' / 100' : ERR_MSG_JS.not_found;
+  const box = document.getElementById('weight-result');
+  box.innerHTML = `
+    <div class="weight-result-row"><span class="wlabel">Recomputed Overall Score</span><span class="wval">${scoreHtml}</span></div>
+    <div class="weight-result-row"><span class="wlabel">State Rank</span><span class="wval gold">Loading&hellip;</span></div>
+    <div class="weight-result-row"><span class="wlabel">District Rank</span><span class="wval gold">Loading&hellip;</span></div>`;
+  const summary = await ensureScoringSummary();
+  const qLabel = DATA.scoring.quarters[scoreQtrIdx];
+  const myId = DATA.overview.mis_id, myDistrict = DATA.overview.district;
+  const scored = summary.clfs.map(c=>({
+    id: c.id, district: c.district,
+    score: computeWeightedScore(c.by_quarter[qLabel] || {}, categoryWeights),
+  })).filter(c=>c.score!=null);
+  scored.sort((a,b)=>b.score-a.score);
+  const stateRank = scored.findIndex(c=>c.id===myId) + 1;
+  const distScored = scored.filter(c=>c.district===myDistrict);
+  const distRank = distScored.findIndex(c=>c.id===myId) + 1;
+  // a newer call (from another slider move) may have started and finished
+  // while this fetch/sort was in flight - discard this stale result rather
+  // than clobber whatever the newer call already rendered
+  if(myRequestId !== weightRequestId) return;
+  box.innerHTML = `
+    <div class="weight-result-row"><span class="wlabel">Recomputed Overall Score</span><span class="wval">${scoreHtml}</span></div>
+    <div class="weight-result-row"><span class="wlabel">State Rank</span><span class="wval gold">${stateRank>0?stateRank+ord(stateRank)+' of '+scored.length:ERR_MSG_JS.not_found}</span></div>
+    <div class="weight-result-row"><span class="wlabel">District Rank</span><span class="wval gold">${distRank>0?distRank+ord(distRank)+' of '+distScored.length:ERR_MSG_JS.not_found}</span></div>`;
+}
+function openWeightModal(){
+  if(!categoryWeights){
+    categoryWeights = {};
+    WEIGHT_CATS.forEach(cat=>categoryWeights[cat]=50);
+  }
+  if(!document.getElementById('weight-modal-backdrop')){
+    document.body.insertAdjacentHTML('beforeend', weightModalHtml());
+    document.getElementById('btn-close-weights').addEventListener('click', closeWeightModal);
+    document.getElementById('btn-done-weights').addEventListener('click', closeWeightModal);
+    document.getElementById('btn-reset-weights').addEventListener('click', ()=>{
+      WEIGHT_CATS.forEach(cat=>categoryWeights[cat]=50); renderWeightRows(); renderWeightResult();
+    });
+    document.getElementById('weight-modal-backdrop').addEventListener('click', e=>{
+      if(e.target.id==='weight-modal-backdrop') closeWeightModal();
+    });
+  }
+  renderWeightRows(); renderWeightResult();
+  document.getElementById('weight-modal-backdrop').classList.add('open');
+}
+function closeWeightModal(){
+  const el = document.getElementById('weight-modal-backdrop');
+  if(el) el.classList.remove('open');
+}
 function renderScoring(sub){
   const opts = DATA.scoring.quarters.map((label,i)=>`<option value="${i}" ${i===scoreQtrIdx?'selected':''}>${label}</option>`).join('');
   const dropdown = `<div class="selectbar"><label for="score-qtr-select">Quarter:</label><select id="score-qtr-select">${opts}</select></div>
     <p class="note-inline">Fund Deployment, Surplus / Deficit, Bookkeeping Accuracy, and every VRF Fund Health, Governance &amp; Compliance, and Welfare and Livelihood metric reflect current standing and don't change by quarter — only the other Fund Utilization &amp; Financial Health line items update.</p>`;
   document.getElementById('panel-scoring').innerHTML =
-    dropdown + (sub==='overall' ? renderScoringOverall() : renderScoringByCategory()) +
-    `<div class="foot-note">Data source: ${FOOTNOTES.scoring}</div>`;
+    contextBox('scoring') + dropdown + (sub==='overall' ? renderScoringOverall() : renderScoringByCategory());
   document.getElementById('score-qtr-select').addEventListener('change', e=>{ scoreQtrIdx=+e.target.value; renderScoring(sub); });
+  if(sub==='overall'){
+    document.getElementById('btn-open-weights').addEventListener('click', openWeightModal);
+  }
 }
 
 const TABS = {
@@ -1181,7 +1351,7 @@ function backToSearch(){
 
 async function initShell(){
   const [manifest, shared] = await Promise.all([fetchJson('data/manifest.json'), fetchJson('data/shared.json')]);
-  MANIFEST = manifest; TIPS = shared.tips || {}; ERR_MSG_JS = shared.err_msg || {}; FOOTNOTES = shared.footnotes || {};
+  MANIFEST = manifest; TIPS = shared.tips || {}; ERR_MSG_JS = shared.err_msg || {}; FOOTNOTES = shared.footnotes || {}; CONTEXT = shared.context || {};
   indexManifest(MANIFEST);
   populateDistrictSelect();
   document.getElementById('finder-count').textContent = `${MANIFEST.counts.clfs} CLFs across ${MANIFEST.counts.districts} districts`;
