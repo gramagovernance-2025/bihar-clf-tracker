@@ -62,6 +62,13 @@ h1{ font-weight:600; font-size:clamp(28px,5vw,38px); margin:0 0 6px 0; text-wrap
 .crumbs b{ color:var(--ink); font-weight:600; }
 .tabbar{ display:flex; gap:4px; margin-bottom:8px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
 .tabbtn{ appearance:none; border:none; background:none; cursor:pointer; font-family:inherit; font-size:14.5px; font-weight:600; color:var(--ink-soft); padding:12px 6px; margin-right:20px; border-bottom:2px solid transparent; min-height:44px; }
+/* long tab labels wrapping to 2-3 lines looks cluttered on narrow phones -
+   scroll horizontally instead, same pattern already used for wide tables. */
+@media (max-width:640px){
+  .tabbar{ flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .subtabbar{ flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:4px; }
+  .tabbtn, .subtabbtn{ white-space:nowrap; flex:none; }
+}
 .tabbtn:hover{ color:var(--ink); }
 .tabbtn.active{ color:var(--primary); border-bottom-color:var(--primary); }
 .subtabbar{ display:flex; gap:6px; margin:14px 0 22px; flex-wrap:wrap; }
@@ -177,6 +184,8 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
 .bar-list{ display:flex; flex-direction:column; gap:11px; }
 .bar-row{ display:grid; grid-template-columns:200px 1fr 50px; gap:12px; align-items:center; }
 @media (max-width:560px){ .bar-row{ grid-template-columns:1fr; gap:4px; } }
+.metric-pctl-row{ display:grid; grid-template-columns:190px 1fr 1fr; gap:16px; align-items:center; margin-bottom:12px; }
+@media (max-width:560px){ .metric-pctl-row{ grid-template-columns:1fr; gap:6px; margin-bottom:16px; } }
 .bar-row .blabel{ font-size:13px; color:var(--ink); }
 .bar-track{ position:relative; height:9px; border-radius:999px; background:var(--grey-soft); }
 .bar-track .fill{ position:absolute; left:0; top:0; bottom:0; border-radius:999px; }
@@ -419,7 +428,7 @@ function pctlRow(label, m, tip){
   if(!m) return `<div class="bar-row"><div class="blabel">${lbl}</div><div class="bar-track"></div><div class="bval" style="color:var(--ink-soft)">${ERR_MSG_JS.not_found}</div></div>`;
   const dRank = m.district_rank!=null && m.n_district!=null ? `${m.district_rank}${ord(m.district_rank)} of ${m.n_district}` : ERR_MSG_JS.not_found;
   const sRank = m.state_rank!=null && m.n_state!=null ? `${m.state_rank}${ord(m.state_rank)} of ${m.n_state}` : ERR_MSG_JS.not_found;
-  return `<div class="metric-pctl-row" style="display:grid;grid-template-columns:190px 1fr 1fr;gap:16px;align-items:center;margin-bottom:12px;">
+  return `<div class="metric-pctl-row">
     <div style="font-size:13.5px;">${lbl}</div>
     <div><div style="font-size:11px;color:var(--ink-soft);display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:var(--primary);font-weight:700;">DISTRICT</span><span>${dRank}</span></div>
       <div class="bar-track"><div class="fill" style="width:${m.district_pctl||0}%;background:var(--primary)"></div></div></div>
