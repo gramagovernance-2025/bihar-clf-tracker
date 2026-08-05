@@ -266,6 +266,13 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
 .back-link:hover{ text-decoration:underline; }
 .placeholder-icon{ font-size:34px; text-align:center; margin-bottom:14px; }
 .finder-count{ text-align:center; font-size:12.5px; color:var(--ink-soft); margin-top:18px; }
+
+.district-link{ color:var(--primary); font-weight:600; text-decoration:none; }
+.district-link:hover{ text-decoration:underline; }
+.clf-link{ color:var(--primary); font-weight:600; text-decoration:none; }
+.clf-link:hover{ text-decoration:underline; }
+.clf-link.tier-bottom{ color:var(--low); }
+.standing-grid.single{ grid-template-columns:1fr; }
 </style>
 </head>
 <body>
@@ -293,14 +300,17 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
       <div id="nav-error" class="nav-error" style="display:none;"></div>
       <div id="finder-count" class="finder-count"></div>
     </div>
+
+    <div class="finder-panel" style="margin-top:20px;">
+      <div class="nav-label">Or Track CLFs Within a District or State</div>
+      <select id="sel-group-district" class="nav-select" style="margin-bottom:16px;"><option value="">Select District to view its Tracker…</option></select>
+      <div class="nav-divider">or</div>
+      <button id="btn-view-state" class="nav-go-btn" style="width:100%;margin-top:16px;">View Bihar Statewide Dashboard</button>
+    </div>
   </div>
 
   <div id="view-tracker">
-    <button id="back-link" class="back-link">&larr; Back to search</button>
-    <header class="masthead">
-      <h1 class="serif" id="crumb-name"></h1>
-      <div class="crumbs"><b id="crumb-district"></b> District &nbsp;&middot;&nbsp; <b id="crumb-block"></b> Block &nbsp;&middot;&nbsp; MIS ID <b id="crumb-mis"></b> &nbsp;&middot;&nbsp; LokOS Code <b id="crumb-code"></b></div>
-    </header>
+    <header class="masthead" id="masthead-content"></header>
     <div class="tabbar" id="tabbar"></div>
     <div class="subtabbar" id="subtabbar"></div>
     <div class="tabpanel active" id="panel-overview"></div>
@@ -309,7 +319,7 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
     <div class="tabpanel" id="panel-vrf"></div>
     <div class="tabpanel" id="panel-vprp"></div>
     <div class="tabpanel" id="panel-scoring"></div>
-    <div class="foot-note">Statewide Comprehensive CLF Tracker. Data as computed by <code>build_tracker_data.py</code>.</div>
+    <div class="foot-note">Statewide Comprehensive CLF Tracker. Data as computed by <code>build_tracker_data.py</code> and <code>build_district_state_data.py</code>.</div>
   </div>
 </div>
 <div class="tooltip-box" id="tooltip-box"></div>
@@ -433,7 +443,7 @@ function standingCard(kind,pctl,rank,n,rankLine,labelText){
   const rankKnown = rank!=null && n!=null;
   const barPct = pctlKnown ? pctl : 0;
   const headline = rankKnown
-    ? `${rank}<sup>${ord(rank)}</sup><span class="outof">out of ${n} CLFs</span>`
+    ? `${fmtNum(rank)}<sup>${ord(rank)}</sup><span class="outof">out of ${fmtNum(n)} CLFs</span>`
     : (pctlKnown ? `${pctl}<sup>${ord(pctl)}</sup>` : '—');
   const subText = pctlKnown ? `${pctl}${ord(pctl)} percentile` : (rankKnown ? '' : 'percentile');
   return `<div class="standing-card ${kind}"><div class="label">${labelText}</div><div class="big serif">${headline}</div>
@@ -444,8 +454,8 @@ function pctlRow(label, m, tip){
   const t = tip || TIPS[label];
   const lbl = t ? `<span class="tip" data-tip="${t}">${label}</span>` : label;
   if(!m) return `<div class="bar-row"><div class="blabel">${lbl}</div><div class="bar-track"></div><div class="bval" style="color:var(--ink-soft)">${ERR_MSG_JS.not_found}</div></div>`;
-  const dRank = m.district_rank!=null && m.n_district!=null ? `${m.district_rank}${ord(m.district_rank)} of ${m.n_district}` : ERR_MSG_JS.not_found;
-  const sRank = m.state_rank!=null && m.n_state!=null ? `${m.state_rank}${ord(m.state_rank)} of ${m.n_state}` : ERR_MSG_JS.not_found;
+  const dRank = m.district_rank!=null && m.n_district!=null ? `${fmtNum(m.district_rank)}${ord(m.district_rank)} of ${fmtNum(m.n_district)}` : ERR_MSG_JS.not_found;
+  const sRank = m.state_rank!=null && m.n_state!=null ? `${fmtNum(m.state_rank)}${ord(m.state_rank)} of ${fmtNum(m.n_state)}` : ERR_MSG_JS.not_found;
   return `<div class="metric-pctl-row">
     <div style="font-size:13.5px;">${lbl}</div>
     <div><div style="font-size:11px;color:var(--ink-soft);display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:var(--primary);font-weight:700;">DISTRICT</span><span>${dRank}</span></div>
@@ -455,7 +465,12 @@ function pctlRow(label, m, tip){
   </div>`;
 }
 function gradedBar(label, pct, tip){
-  const t = tip || TIPS[label];
+  // tip===undefined (not passed at all) means "use the TIPS auto-lookup";
+  // tip==='' (explicitly passed empty) means "this caller wants no tooltip
+  // here, even if TIPS happens to have a same-named entry" - Category
+  // Summary's 5 category names need the latter, since e.g. "VRF Fund
+  // Health" collides with an unrelated tip written for the VRF tab.
+  const t = tip !== undefined ? tip : TIPS[label];
   const lbl = t ? `<span class="tip" data-tip="${t}">${label}</span>` : label;
   const c = grade(pct);
   return `<div class="bar-row"><div class="blabel"><b>${lbl}</b></div><div class="bar-track"><div class="fill" style="width:${pct}%;background:${c}"></div></div><div class="bval" style="color:${c}">${pct}%</div></div>`;
@@ -583,7 +598,83 @@ function renderOverviewMembers(){
   <section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Cadre Roles in This CLF']}">Cadre Members</h2><span class="hint">${o.n_cadre_holders} members across ${o.n_distinct_cadre_types} distinct roles, ordered by count</span></div>
     <div class="panel">${tableHtml([{label:'Position'},{label:'Members',num:true}], Object.entries(o.cadre_roster).map(([k,v])=>[k,v]))}</div></section>`;
 }
+// ---- VO Overview: table of every VO in this CLF, click a name to swap the
+// same sub-tab to a single consolidated detail page for that VO (governance
+// + member stats together, no further sub-split), with a Back button
+// returning to the table - all in-page state, no dedicated URL. ----
+let voDetailCode = null;
+function voOverviewCols(){ return [
+  {label:'VO', key:'vo_name'}, {label:'Block', key:'block'}, {label:'SHGs', num:true, key:'n_shgs'},
+  {label:'Members', num:true, key:'n_members'}, {label:'% Active', num:true, key:'pct_active'},
+]; }
+function voOverviewRow(v){
+  return [
+    `<a href="#" class="clf-link vo-detail-link" data-vo="${v.vo_code}">${v.vo_name}</a>`,
+    v.block||'—', fmtNum(v.n_shgs), fmtNum(v.n_members), v.pct_active!=null?v.pct_active+'%':'—',
+  ];
+}
+function renderVoTable(){
+  const vos = DATA.vo_overview || [];
+  if(!vos.length) return `<section><div class="panel"><p class="disclaimer">No VO-level data available for this CLF.</p></div></section>`;
+  return `<section><div class="section-head"><h2 class="serif">VOs in this CLF</h2><span class="hint">${vos.length} VOs &middot; click a VO to see its full profile</span></div>
+    <div class="panel"><div id="vo-overview-table-container"></div></div></section>`;
+}
+function renderVoDetail(voCode){
+  const v = (DATA.vo_overview||[]).find(x=>String(x.vo_code)===String(voCode));
+  if(!v) return `<p class="disclaimer">VO not found.</p>`;
+  const covRows = Object.entries(v.coverage).map(([k,[pct,n]])=>[k, fmtNum(n), pct!=null?pct+'%':'—']);
+  const eduRows = Object.entries(v.education).map(([k,[pct,n]])=>[k, fmtNum(n), pct!=null?pct+'%':'—']);
+  const subcomRows = Object.entries(v.subcom).map(([k,n])=>[k, fmtNum(n)]);
+  const cadreRows = Object.entries(v.cadre_roster).map(([k,n])=>[k, fmtNum(n)]);
+  const lvColors = ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)'];
+  const lvDonut = donutBlock('ring-vo-livelihood', v.livelihood_split, lvColors, {size:170, fmt:val=>val+'%'});
+  return `
+  <button id="vo-back-btn" class="back-link">&larr; Back to VO list</button>
+  <section><div class="section-head"><h2 class="serif">${v.vo_name}</h2><span class="hint">${v.block||''} Block &middot; LokOS Code ${v.nic_code||'—'}</span></div>
+    <div class="panel"><div class="tiles n4">
+      ${tile('Number of SHGs', fmtNum(v.n_shgs), null, 'info')}${tile('Total Members', fmtNum(v.n_members), null, 'info')}
+      ${tile('Active Members', v.pct_active!=null?v.pct_active+'%':'—')}${tile('Status', v.active===true?'Active':(v.active===false?'Inactive':'—'), null, v.active===false?'neg':'')}
+    </div>
+    <div class="tiles n1" style="margin-top:14px;">${tile('Formation Date', v.formation_date||'—', null, 'neutral')}</div>
+    </div></section>
+  <section><div class="section-head"><h2 class="serif">Governance</h2></div>
+    <div class="panel">
+      <div class="tiles n3" style="margin-bottom:16px;">${tile('President', v.president||'—', null, 'neutral')}${tile('Secretary', v.secretary||'—', null, 'neutral')}${tile('Executive Committee Size', fmtNum(v.ec_count), null, 'info')}</div>
+      ${tableHtml([{label:'Subcommittee'},{label:'Members',num:true}], subcomRows)}
+      <div class="tiles n2" style="margin-top:16px;">${tile('Meeting Frequency', v.meeting_frequency||'—', null, 'neutral')}${tile('Savings Schedule', (v.savings_frequency||'—')+(v.savings_amount?(' &middot; '+fmtRs(v.savings_amount)):''), null, 'neutral')}</div>
+    </div></section>
+  <section><div class="section-head"><h2 class="serif">Social Inclusion / Welfare Coverage</h2></div>
+    <div class="panel">${tableHtml([{label:'Group'},{label:'#',num:true},{label:'%',num:true}], covRows)}</div></section>
+  <section><div class="section-head"><h2 class="serif">Education &amp; Literacy</h2></div>
+    <div class="panel">${tableHtml([{label:'Milestone'},{label:'#',num:true},{label:'%',num:true}], eduRows)}</div></section>
+  <section><div class="section-head"><h2 class="serif">Livelihoods Diversification</h2></div>
+    <div class="panel">
+      <div class="tiles n2" style="margin-bottom:18px;">${tile('Members With a Livelihood', v.pct_has_livelihood!=null?v.pct_has_livelihood+'%':'—')}${tile('Members With Multiple Livelihoods', v.pct_multi_livelihood!=null?v.pct_multi_livelihood+'%':'—')}</div>
+      ${lvDonut.html}
+    </div></section>
+  <section><div class="section-head"><h2 class="serif">Cadre Members</h2><span class="hint">${fmtNum(v.n_cadre_holders)} members across ${fmtNum(v.n_distinct_cadre_types)} distinct roles</span></div>
+    <div class="panel">${cadreRows.length?tableHtml([{label:'Position'},{label:'Members',num:true}], cadreRows):'<p class="disclaimer">No cadre roles recorded.</p>'}</div></section>`;
+}
+function renderOverviewVODispatch(){
+  const panel = document.getElementById('panel-overview');
+  if(voDetailCode){
+    panel.innerHTML = renderVoDetail(voDetailCode);
+    document.getElementById('vo-back-btn').addEventListener('click', ()=>{ voDetailCode=null; renderOverviewVODispatch(); });
+    const v = (DATA.vo_overview||[]).find(x=>String(x.vo_code)===String(voDetailCode));
+    if(v) donutBlock('ring-vo-livelihood', v.livelihood_split, ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)'], {size:170, fmt:val=>val+'%'}).draw();
+  } else {
+    panel.innerHTML = renderVoTable();
+    if((DATA.vo_overview||[]).length){
+      makeSortableTable('vo-overview-table-container', voOverviewCols(), DATA.vo_overview, voOverviewRow);
+      document.querySelectorAll('.vo-detail-link').forEach(a=>{
+        a.addEventListener('click', e=>{ e.preventDefault(); voDetailCode=a.dataset.vo; renderOverviewVODispatch(); });
+      });
+    }
+  }
+}
 function renderOverview(sub){
+  if(sub!=='vo') voDetailCode = null;
+  if(sub==='vo'){ renderOverviewVODispatch(); return; }
   document.getElementById('panel-overview').innerHTML =
     contextBox('overview') +
     (sub==='profile' ? renderOverviewProfile() : renderOverviewMembers());
@@ -736,7 +827,7 @@ function renderFinStatements(){
     </div></section>
   <section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Receipts & Payments Statement']}">Receipts &amp; Payments Statement</h2><span class="hint">${q.label}</span></div>
     <div class="panel">
-      ${q.is_real ? `
+      ${(q.is_real && recvRows && payRows) ? `
       <div class="statement-grid">
         <div><h3 style="font-size:13.5px;margin:0 0 8px;">Receipts</h3>${tableHtml([{label:'Line Item'},{label:'Amount',num:true}], recvRows)}</div>
         <div><h3 style="font-size:13.5px;margin:0 0 8px;">Payments</h3>${tableHtml([{label:'Line Item'},{label:'Amount',num:true}], payRows)}</div>
@@ -768,9 +859,9 @@ function renderVrfKpi(){
   return `
   <section><div class="section-head"><h2 class="serif">CLF Details</h2></div>
     <div class="panel"><div class="tiles n3">
-      ${tile('FSF-Eligible VOs', v.fsf_eligible+' of '+v.n_vo)}
-      ${tile('VOs With Incomplete Coverage', v.incomplete_coverage+' of '+v.n_vo, null, v.incomplete_coverage>0?'neg':'')}
-      ${tile('Idle VOs', v.idle_vo+' of '+v.received_vo, null, v.idle_vo>0?'neg':'')}
+      ${tile('FSF-Eligible VOs', fmtNum(v.fsf_eligible)+' of '+fmtNum(v.n_vo))}
+      ${tile('VOs With Incomplete Coverage', fmtNum(v.incomplete_coverage)+' of '+fmtNum(v.n_vo), null, v.incomplete_coverage>0?'neg':'')}
+      ${tile('Idle VOs', fmtNum(v.idle_vo)+' of '+fmtNum(v.received_vo), null, v.idle_vo>0?'neg':'')}
     </div></div></section>
   <section><div class="section-head"><h2 class="serif">Vulnerability Reduction Fund Size</h2></div>
     <div class="panel"><div class="tiles n5">
@@ -792,20 +883,20 @@ function renderVrfKpi(){
     </div></div></section>
   <section><div class="section-head"><h2 class="serif">Needs Attention</h2></div>
     <div class="panel"><div class="attn-grid">
-      <div class="attn-card"><h3 class="tip" data-tip="${TIPS['Grant Not Fully Received']}">Grant Not Fully Received</h3><div class="attn-headline">${v.incomplete_coverage} of ${v.n_vo} VOs</div>
+      <div class="attn-card"><h3 class="tip" data-tip="${TIPS['Grant Not Fully Received']}">Grant Not Fully Received</h3><div class="attn-headline">${fmtNum(v.incomplete_coverage)} of ${fmtNum(v.n_vo)} VOs</div>
         <p class="desc" style="max-width:none;">Every VO can receive up to ₹1,50,000 from the government. This shows how many of your VOs haven't received the full amount yet — ${fmtRs(v.coverage_gap)} in total is still owed to them.</p>
         <div class="pictogram" id="pict-coverage"></div>
         <div class="pict-legend">
-          <span><span class="sw" style="background:var(--primary)"></span><span>Fully received (${v.n_vo-v.incomplete_coverage})</span></span>
-          <span><span class="sw" style="background:var(--gold)"></span><span>Still owed (${v.incomplete_coverage})</span></span>
+          <span><span class="sw" style="background:var(--primary)"></span><span>Fully received (${fmtNum(v.n_vo-v.incomplete_coverage)})</span></span>
+          <span><span class="sw" style="background:var(--gold)"></span><span>Still owed (${fmtNum(v.incomplete_coverage)})</span></span>
         </div></div>
-      <div class="attn-card"><h3 class="tip" data-tip="${TIPS['Fund Sitting Idle']}">Fund Sitting Idle</h3><div class="attn-headline">${v.idle_vo} of ${v.received_vo} VOs</div>
+      <div class="attn-card"><h3 class="tip" data-tip="${TIPS['Fund Sitting Idle']}">Fund Sitting Idle</h3><div class="attn-headline">${fmtNum(v.idle_vo)} of ${fmtNum(v.received_vo)} VOs</div>
         <p class="desc" style="max-width:none;">Of the VOs that have received VRF funds, this shows how many earned no interest from lending last year — meaning that portion of the fund is sitting unused instead of helping members.</p>
         <div class="pictogram" id="pict-interest"></div>
         <div class="pict-legend">
-          <span><span class="sw" style="background:var(--primary)"></span><span>Earning interest (${earning})</span></span>
-          <span><span class="sw" style="background:var(--gold)"></span><span>Idle, no interest (${v.idle_vo})</span></span>
-          <span><span class="sw" style="background:var(--grey)"></span><span>Not yet received VRF (${notReceived})</span></span>
+          <span><span class="sw" style="background:var(--primary)"></span><span>Earning interest (${fmtNum(earning)})</span></span>
+          <span><span class="sw" style="background:var(--gold)"></span><span>Idle, no interest (${fmtNum(v.idle_vo)})</span></span>
+          <span><span class="sw" style="background:var(--grey)"></span><span>Not yet received VRF (${fmtNum(notReceived)})</span></span>
         </div></div>
     </div></div></section>`;
 }
@@ -913,7 +1004,7 @@ function renderVrfFundStanding(){
       ${standingCard('district', v.composite_dist_pctl, v.composite_dist_rank, v.n_district, 'Composite score '+v.composite, 'Within '+v.district_name+' District')}
       ${standingCard('state', v.composite_state_pctl, v.composite_state_rank, v.n_state, 'Composite score '+v.composite, 'Within Bihar (Statewide)')}
     </div>
-    ${v.metrics.map(m=>pctlRow(m.label, m, TIPS['VRF Fund Health'])).join('')}
+    ${v.metrics.map(m=>pctlRow(m.label, m)).join('')}
     </div></section>`;
 }
 
@@ -1030,26 +1121,46 @@ function renderVRF(sub){
 }
 
 let vprpYear = 2025;
+let vprpGp = 'ALL';
 const PGSRD_COLORS = ['var(--primary)','var(--gold)','#5B8AA6'];
 const SDP_COLORS = ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)'];
+function currentVprpYearData(){
+  const yearObj = DATA.vprp.years[vprpYear];
+  if(!yearObj) return yearObj;
+  if(vprpGp !== 'ALL' && yearObj.by_gp && yearObj.by_gp[vprpGp]) return yearObj.by_gp[vprpGp];
+  return yearObj;
+}
+function vprpGpNamesCell(gpNames){
+  if(!gpNames || !gpNames.length) return '—';
+  if(gpNames.length <= 2) return gpNames.join(', ');
+  return `<span class="tip" data-tip="${gpNames.join(', ')}">${gpNames.length} GPs</span>`;
+}
 function yearDropdown(){
   const opts = [2023,2024,2025].map(y=>`<option value="${y}" ${y===vprpYear?'selected':''}>${y}</option>`).join('');
-  return `<div class="selectbar"><label for="yr-select">Year:</label><select id="yr-select">${opts}</select></div>`;
+  const yearObj = DATA.vprp.years[vprpYear];
+  const gpList = (yearObj && yearObj.gp_list) || [];
+  const gpBlock = gpList.length ? `<label for="gp-select" style="margin-left:16px;">GP:</label>
+    <select id="gp-select"><option value="ALL" ${vprpGp==='ALL'?'selected':''}>All GPs</option>${gpList.map(gp=>`<option value="${gp}" ${gp===vprpGp?'selected':''}>${gp}</option>`).join('')}</select>` : '';
+  return `<div class="selectbar"><label for="yr-select">Year:</label><select id="yr-select">${opts}</select>${gpBlock}</div>`;
 }
 function emptyYearNote(domainKey){
   const msg = (ERR_MSG_JS[domainKey] || 'We could not locate data for your CLF in {year}.').replace('{year}', vprpYear);
   return `<p class="disclaimer">${msg}</p>`;
 }
 function renderVprpEnt(){
-  const y = DATA.vprp.years[vprpYear];
+  const y = currentVprpYearData();
   if(!y || !y.n_demands) return emptyYearNote('vprp_ent');
   const accessedNote = vprpYear===2025 ? ` — this year is recent, so accessed status may not be fully updated yet` : '';
   const schemeRows = (y.by_scheme||[]).map(s=>{
-    const tds = `<td>${s.scheme}</td><td class="num">${fmtNum(s.demanded)}</td>`;
+    const tds = `<td>${s.scheme}</td><td class="num">${fmtNum(s.demanded)}</td><td class="num">${fmtNum(s.n_vo)}</td><td>${vprpGpNamesCell(s.gp_names)}</td>`;
     let extra = '';
     if(s.raw_scheme==='state-specific' && y.state_scheme_breakdown){
-      const subRows = Object.entries(y.state_scheme_breakdown).map(([k,v])=>`<tr><td style="padding-left:28px;color:var(--ink-soft);">${k}</td><td class="num">${fmtNum(v)}</td></tr>`).join('');
-      extra = `<tr><td colspan="2" style="padding:2px 0 8px 10px;"><table style="width:100%;"><tbody>${subRows}</tbody></table></td></tr>`;
+      // Sibling <tr>s in the SAME table (not a nested <table> in a merged
+      // cell) so the sub-rows share the parent's actual column grid - a
+      // nested table lays its own columns out independently and doesn't
+      // know where "Demanded" sits in the outer table.
+      extra = Object.entries(y.state_scheme_breakdown).map(([k,v])=>
+        `<tr><td style="padding-left:28px;color:var(--ink-soft);">${k}</td><td class="num">${fmtNum(v.demanded)}</td><td class="num">${fmtNum(v.n_vo)}</td><td>${vprpGpNamesCell(v.gp_names)}</td></tr>`).join('');
     }
     return `<tr>${tds}</tr>${extra}`;
   }).join('');
@@ -1057,45 +1168,51 @@ function renderVprpEnt(){
     <div class="panel">
       <div class="tiles n3" style="margin-bottom:16px;">
         ${tile('Number of People Requesting', fmtNum(y.n_demands))}
-        ${tile('% of Job Cards Accessed', fmtPct(y.pct_nrega_accessed), vprpYear===2025?'recent year, may be incomplete':null)}
-        ${tile('Non-NREGA Schemes Requested', fmtNum(y.n_other_schemes), 'distinct scheme types')}
+        ${tile('Number of VOs Requesting', fmtNum(y.n_vo_requesting_ent))}
+        ${tile('Number of Schemes Requested', fmtNum(y.n_schemes_total), 'distinct scheme types, incl. NREGA')}
       </div>
       ${y.by_scheme ? `<p class="hint tip" style="margin-bottom:8px;" data-tip="${TIPS['Demand & Access by Scheme']}"><b>Demand by Scheme</b>${accessedNote}</p>
-        <div class="table-wrap"><table><thead><tr><th>Scheme</th><th class="num">Demanded</th></tr></thead><tbody>${schemeRows}</tbody></table></div>` : ''}
+        <div class="table-wrap"><table><thead><tr><th>Scheme</th><th class="num">Demanded</th><th class="num">VOs</th><th>GPs</th></tr></thead><tbody>${schemeRows}</tbody></table></div>` : ''}
     </div></section>`;
 }
 function renderVprpPgsrd(){
-  const y = DATA.vprp.years[vprpYear];
+  const y = currentVprpYearData();
   if(!y || !y.n_pgsrd) return emptyYearNote('vprp_pgsrd');
-  const items = (y.pgsrd_items||[]).map(it=>[it.item_demanded, it.pgsrd_type, it.n, Math.round(it.units)]);
+  const items = (y.pgsrd_items||[]).map(it=>[it.item_demanded, it.pgsrd_type, fmtNum(it.n), fmtNum(Math.round(it.units)), fmtNum(it.n_vo), vprpGpNamesCell(it.gp_names)]);
   const typeDonut = y.pgsrd_type_split ? donutBlock('ring-pgsrd-type', y.pgsrd_type_split, PGSRD_COLORS, {size:150, fmt:v=>v+'%'}) : null;
   return `<section><div class="section-head"><h2 class="serif">Public Goods, Services, and Resource Development</h2></div>
     <div class="panel">
-      <div class="tiles n1" style="margin-bottom:16px;">${tile('Total PGSRD Requests', fmtNum(y.n_pgsrd))}</div>
+      <div class="tiles n2" style="margin-bottom:16px;">${tile('Total PGSRD Requests', fmtNum(y.n_pgsrd))}${tile('Number of VOs Requesting', fmtNum(y.n_vo_requesting_pgsrd))}</div>
       ${typeDonut?`<p class="hint tip" data-tip="${TIPS['Type of Request']}"><b>Type of Request</b></p>${typeDonut.html}`:''}
-      ${items.length?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Most-Requested Items']}"><b>Most-Requested Items</b></p>${tableHtml([{label:'Item'},{label:'Type'},{label:'# Requests',num:true},{label:'Total Units',num:true}], items)}`:''}
-      ${y.sdg_theme?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['By Development Theme']}"><b>By Development Theme</b></p><div class="pills" style="margin-bottom:8px;">${Object.entries(y.sdg_theme).map(([k,v])=>`<span class="pill on">${k} (${v})</span>`).join('')}</div>`:''}
-      ${y.gpdp_area?`<p class="hint tip" style="margin-top:14px;" data-tip="${TIPS['By GPDP Focus Area']}"><b>By GPDP Focus Area</b></p><div class="pills">${Object.entries(y.gpdp_area).map(([k,v])=>`<span class="pill on">${k} (${v})</span>`).join('')}</div>`:''}
+      ${items.length?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Most-Requested Items']}"><b>Most-Requested Items</b></p>${tableHtml([{label:'Item'},{label:'Type'},{label:'# Requests',num:true},{label:'Total Units',num:true},{label:'VOs',num:true},{label:'GPs'}], items)}`:''}
+      ${y.sdg_theme?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['By Development Theme']}"><b>By Development Theme</b></p><div class="pills" style="margin-bottom:8px;">${Object.entries(y.sdg_theme).map(([k,v])=>`<span class="pill on">${k} (${fmtNum(v)})</span>`).join('')}</div>`:''}
+      ${y.gpdp_area?`<p class="hint tip" style="margin-top:14px;" data-tip="${TIPS['By GPDP Focus Area']}"><b>By GPDP Focus Area</b></p><div class="pills">${Object.entries(y.gpdp_area).map(([k,v])=>`<span class="pill on">${k} (${fmtNum(v)})</span>`).join('')}</div>`:''}
     </div></section>`;
 }
 function renderVprpSdp(){
-  const y = DATA.vprp.years[vprpYear];
+  const y = currentVprpYearData();
   if(!y || !y.n_sdp) return emptyYearNote('vprp_sdp');
-  const issues = (y.sdp_issues||[]).map(it=>[it.social_issue, it.n, it.affected!==null?fmtNum(it.affected):'not reported']);
+  const issues = (y.sdp_issues||[]).map(it=>[it.social_issue, fmtNum(it.n), it.affected!==null?fmtNum(it.affected):'not reported', fmtNum(it.n_vo), vprpGpNamesCell(it.gp_names)]);
   const sectorDonut = y.sdp_sector ? donutBlock('ring-sdp-sector', y.sdp_sector, SDP_COLORS, {size:150, fmt:v=>v+'%'}) : null;
   return `<section><div class="section-head"><h2 class="serif">Social Development Plan</h2></div>
     <div class="panel">
-      <div class="tiles n1" style="margin-bottom:16px;">${tile('Total Social Issues Raised', fmtNum(y.n_sdp))}</div>
+      <div class="tiles n3" style="margin-bottom:16px;">
+        ${tile('Total Social Issues Raised', fmtNum(y.n_sdp))}
+        ${tile('Number of VOs', fmtNum(y.n_vo))}
+        ${tile('Government Departments Involved', fmtNum(y.n_departments))}
+      </div>
       ${sectorDonut?`<p class="hint tip" data-tip="${TIPS['By Sector']}"><b>By Sector</b></p>${sectorDonut.html}`:''}
-      ${issues.length?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Most-Raised Issues']}"><b>Most-Raised Issues</b></p>${tableHtml([{label:'Issue'},{label:'# Occurrences',num:true},{label:'People Affected',num:true}], issues)}`:''}
-      ${y.departments?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Government Departments Involved']}"><b>Government Departments Involved</b></p><div class="pills">${Object.entries(y.departments).map(([k,v])=>`<span class="pill on">${k} (${v})</span>`).join('')}</div>`:''}
+      ${issues.length?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Most-Raised Issues']}"><b>Most-Raised Issues</b></p>${tableHtml([{label:'Issue'},{label:'# Occurrences',num:true},{label:'People Affected',num:true},{label:'VOs',num:true},{label:'GPs'}], issues)}`:''}
+      ${y.departments?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Government Departments Involved']}"><b>Government Departments Involved</b></p><div class="pills">${Object.entries(y.departments).map(([k,v])=>`<span class="pill on">${k} (${fmtNum(v)})</span>`).join('')}</div>`:''}
     </div></section>`;
 }
 function renderVPRP(sub){
-  const y = DATA.vprp.years[vprpYear];
   const body = sub==='entitlements' ? renderVprpEnt() : sub==='pgsrd' ? renderVprpPgsrd() : renderVprpSdp();
   document.getElementById('panel-vprp').innerHTML = contextBox('vprp') + yearDropdown() + body;
-  document.getElementById('yr-select').addEventListener('change', e=>{ vprpYear=+e.target.value; renderVPRP(sub); });
+  document.getElementById('yr-select').addEventListener('change', e=>{ vprpYear=+e.target.value; vprpGp='ALL'; renderVPRP(sub); });
+  const gpSel = document.getElementById('gp-select');
+  if(gpSel) gpSel.addEventListener('change', e=>{ vprpGp=e.target.value; renderVPRP(sub); });
+  const y = currentVprpYearData();
   if(sub==='pgsrd' && y && y.pgsrd_type_split) donutBlock('ring-pgsrd-type', y.pgsrd_type_split, PGSRD_COLORS, {size:150, fmt:v=>v+'%'}).draw();
   if(sub==='sdp' && y && y.sdp_sector) donutBlock('ring-sdp-sector', y.sdp_sector, SDP_COLORS, {size:150, fmt:v=>v+'%'}).draw();
 }
@@ -1136,7 +1253,7 @@ function renderScoringByCategory(){
   const topSentence = bottomHalf.length ? `<p class="callout-attn" style="margin:0 0 16px;">Your CLF falls in the bottom-half of performance for ${listPhrase(bottomHalf.map(({label})=>label))}.</p>` : '';
   return topSentence + cats.map(([catName,cat])=>`
     <section><div class="section-head"><h2 class="serif">${catName}</h2><span class="hint"><b>Score: ${cat.score!==null?cat.score+'/100':ERR_MSG_JS.not_found}</b></span></div>
-      <div class="panel">${cat.metrics.map(([label,m])=>pctlRow(label, m, catName==='VRF Fund Health'?TIPS['VRF Fund Health']:undefined)).join('')}</div></section>`).join('');
+      <div class="panel">${cat.metrics.map(([label,m])=>pctlRow(label, m)).join('')}</div></section>`).join('');
 }
 // ============================================================================
 // Customizable category weights. The recomputed score itself needs only this
@@ -1260,25 +1377,461 @@ function renderScoring(sub){
   }
 }
 
+let GROUP_DATA = null;      // currently loaded District or State aggregate
+let GROUP_PSEUDO_CLF = null;
+
+const STATUS_COLORS = ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)'];
+function renderGroupOverviewProfile(){
+  const o = GROUP_DATA.overview;
+  const statusDonut = donutBlock('ring-group-status', o.status_distribution, STATUS_COLORS, {size:190, fmt:v=>fmtNum(v)+' CLFs'});
+  const subcomRows = Object.entries(o.subcom_agg).map(([k,v])=>[k, fmtNum(v)]);
+  const scopeHint = isState() ? 'statewide' : `aggregate of ${fmtNum(o.n_clfs)} CLFs`;
+  return `
+  <section><div class="section-head"><h2 class="serif">${isState()?'Statewide':'District'} Snapshot</h2><span class="hint">${scopeHint}</span></div>
+    <div class="panel"><div class="tiles n4">
+      ${tile('Number of CLFs', fmtNum(o.n_clfs), null, 'info')}${tile('Number of VOs', fmtNum(o.n_vo), null, 'info')}
+      ${tile('Number of SHGs', fmtNum(o.n_shg), null, 'info')}${tile('Total Members', fmtNum(o.n_members), null, 'info')}
+    </div>
+    <div class="tiles n1" style="margin-top:14px;">${tile('Active Members', fmtNum(o.n_active), o.pct_active+'% of total')}</div>
+    </div></section>
+  <section><div class="section-head"><h2 class="serif">CLF Status Distribution</h2></div>
+    <div class="panel">${statusDonut.html}</div></section>
+  <section><div class="section-head"><h2 class="serif">Governance Structure (Total)</h2></div>
+    <div class="panel">
+      <div class="tiles n2" style="margin-bottom:16px;">${tile('Total Executive Committee Members', fmtNum(o.total_ec), null, 'info')}${tile('Avg. EC Size per CLF', o.avg_ec!=null?o.avg_ec.toFixed(1):'—')}</div>
+      ${tableHtml([{label:'Subcommittee', tip:TIPS['Subcommittee Membership']},{label:'Members (summed)',num:true}], subcomRows)}
+    </div></section>`;
+}
+function renderGroupOverviewMembers(){
+  const o = GROUP_DATA.overview;
+  const covRows = Object.entries(o.coverage).map(([k,[pct,n]])=>[k, fmtNum(n), pct+'%']);
+  const eduRows = Object.entries(o.education).map(([k,[pct,n]])=>[k, fmtNum(n), pct+'%']);
+  const lvColors = ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)'];
+  const lvDonut = donutBlock('ring-group-livelihood', o.livelihood_split, lvColors, {size:190, fmt:v=>v+'%'});
+  const cadreRows = Object.entries(o.cadre_roster).slice(0,15).map(([k,v])=>[k, fmtNum(v)]);
+  const active = Object.entries(o.spa_agg).filter(([,v])=>v>0);
+  const scopeText = isState() ? 'member-weighted statewide average' : 'member-weighted district average';
+  return `
+  <section><div class="section-head"><h2 class="serif">Social Inclusion / Welfare Coverage</h2><span class="hint">${scopeText}</span></div>
+    <div class="panel">${tableHtml([{label:'Group'},{label:'#',num:true},{label:'%',num:true}], covRows)}</div></section>
+  <section><div class="section-head"><h2 class="serif">Education &amp; Literacy</h2></div>
+    <div class="panel">${tableHtml([{label:'Milestone'},{label:'#',num:true},{label:'%',num:true}], eduRows)}</div></section>
+  <section><div class="section-head"><h2 class="serif">Livelihoods Diversification</h2></div>
+    <div class="panel">
+      <div class="tiles n2" style="margin-bottom:18px;">${tile('Members With a Livelihood', o.pct_has_livelihood+'%')}${tile('Members With Multiple Livelihoods', o.pct_multi_livelihood+'%')}</div>
+      ${lvDonut.html}
+    </div></section>
+  <section><div class="section-head"><h2 class="serif">Special Project Activities</h2><span class="hint">% of CLFs engaged, of ${fmtNum(o.spa_n_clfs_found)} CLFs reporting &middot; activities no CLF engages in are omitted</span></div>
+    <div class="panel">${active.length ? `<div class="pills">${active.map(([k,v])=>`<span class="pill on">${k} (${v}%)</span>`).join('')}</div>` : `<p class="disclaimer">${ERR_MSG_JS.not_found}</p>`}</div></section>
+  <section><div class="section-head"><h2 class="serif">Cadre Roster (Total)</h2><span class="hint">top 15 roles, summed across all CLFs</span></div>
+    <div class="panel">${tableHtml([{label:'Position'},{label:'Members',num:true}], cadreRows)}</div></section>`;
+}
+function renderGroupOverview(sub){
+  document.getElementById('panel-overview').innerHTML = contextBox('overview') +
+    (sub==='profile' ? renderGroupOverviewProfile() : renderGroupOverviewMembers());
+  if(sub==='profile'){
+    donutBlock('ring-group-status', GROUP_DATA.overview.status_distribution, STATUS_COLORS, {size:190, fmt:v=>fmtNum(v)+' CLFs'}).draw();
+  }
+  if(sub==='members'){
+    const lvColors = ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)'];
+    donutBlock('ring-group-livelihood', GROUP_DATA.overview.livelihood_split, lvColors, {size:190, fmt:v=>v+'%'}).draw();
+  }
+}
+
+// ---- Audit: same visual language as JS_AUDIT, sourced from the raw/max-
+// recomputed aggregate. District gets a REAL "vs. State" standing card
+// (computed against all 38 districts by build_district_state_data.py);
+// State has no card at all - it's the top of the hierarchy, nothing to
+// compare it against. ----
+function renderGroupAuditScores(){
+  const a = GROUP_DATA.audit;
+  if(!a.n_found) return `<section><div class="panel"><p class="disclaimer">${ERR_MSG_JS.audit_scores}</p></div></section>`;
+  const worst = a.category_breakdown.filter(c=>grade(c.pct)==='var(--low)');
+  const scopeNoun = isState() ? 'Bihar statewide' : `${GROUP_DATA.name} district`;
+  const attnSentence = worst.length ? `<p class="callout-attn">${scopeNoun} needs to pay most attention to ${catListPhrase(worst.map(c=>c.label))}.</p>` : '';
+  const standingBlock = isState() ? '' : `<div class="standing-grid single">${standingCard('state', a.avg_score, a.state_rank, a.n_state, 'Score '+a.avg_score+' / 100', 'Standing vs. State')}</div>`;
+  const grouped = a.category_breakdown.map(c=>({cat:c.label, items:a.item_scores.filter(it=>it.category===c.label)})).filter(g=>g.items.length);
+  return `
+  <section><div class="section-head"><h2 class="serif">Grade &amp; Standing</h2><span class="hint">Q4 only &middot; ${fmtNum(a.n_found)} of ${fmtNum(a.n_total)} CLFs have an audit</span></div>
+    <div class="panel">
+      <div class="tiles n2" style="margin-bottom:18px;">${tile('Average Audit Score', a.avg_score+' / 100', null, 'big-value')}${tile('Most Common Grade', a.top_grade||'—', null, 'big-value')}</div>
+      ${standingBlock}
+    </div></section>
+  <section><div class="section-head"><h2 class="serif">Grade Distribution</h2><span class="hint">${fmtNum(a.n_found)} CLFs with an audit</span></div>
+    <div class="panel"><div class="chart-box" style="height:auto;"><svg id="group-grade-hist" viewBox="0 0 500 220" style="width:100%;height:auto;display:block;"></svg></div></div></section>
+  <section><div class="section-head"><h2 class="serif">Category Breakdown</h2><span class="hint">average %, averaged across CLFs with an audit (not summed)</span></div>
+    <div class="panel"><div class="donut-row">${a.category_breakdown.map((c,i)=>`
+      <div class="donut-card"><div style="position:relative;width:76px;height:76px;margin:0 auto;">
+        <svg id="group-cat-ring-${i}" viewBox="0 0 190 190" width="76" height="76" style="display:block;"></svg>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;"><span style="font-weight:700;font-size:1.05rem;color:${grade(c.pct)}">${c.pct}%</span></div>
+      </div><div class="dlabel"><b>${c.label}</b><br><span style="font-size:11px;">avg ${c.raw!=null?c.raw.toFixed(1):'—'}/${c.max}</span></div></div>`).join('')}
+    </div>${attnSentence}</div></section>
+  <section><div class="section-head"><h2 class="serif">Individual Item Scores</h2><span class="hint">average %, averaged across CLFs with an audit (not summed)</span></div>
+    <div class="panel">${grouped.map(g=>`
+      <div class="cat-group">
+        <div class="cat-bracket-label">${g.cat}</div><div class="cat-bracket"></div>
+        <div class="cat-group-items">${g.items.map(it=>gradedBar(it.label+' ('+(it.raw!=null?it.raw.toFixed(1):'—')+'/'+it.max+')', it.pct)).join('')}</div>
+      </div>`).join('')}</div></section>`;
+}
+function renderGroupAuditIrreg(){
+  const a = GROUP_DATA.audit;
+  if(!a.n_found) return `<section><div class="section-head"><h2 class="serif">Financial Irregularities</h2></div>
+    <div class="panel"><p class="disclaimer">${ERR_MSG_JS.financial_irregularities}</p></div></section>`;
+  const irregRows = Object.entries(a.irregularity_categories).map(([k,v])=>[k, fmtNum(v)]);
+  const gapKnown = a.gap_total_abs != null;
+  return `<section><div class="section-head"><h2 class="serif">Financial Irregularities</h2><span class="hint">Q4 only</span></div>
+    <div class="panel">
+      <div class="tiles n1" style="margin-bottom:16px;">${tile('CLFs Flagged', fmtNum(a.n_flagged)+' of '+fmtNum(a.n_found), null, a.n_flagged>0?'neg':'')}</div>
+      ${irregRows.length?tableHtml([{label:'Category'},{label:'CLFs Flagged',num:true}], irregRows):'<p class="disclaimer">No irregularity categories to show.</p>'}
+      <div class="tiles n1" style="margin-top:16px;">${tile('Total Cash Book vs. Physical Cash Gap', gapKnown?fmtRs(a.gap_total_abs):'—', fmtNum(a.n_cash_higher)+' CLFs cash-book-higher &middot; '+fmtNum(a.n_physical_higher)+' physical-higher &middot; '+fmtNum(a.n_exact_match)+' exact match', gapKnown&&a.gap_total_abs>0?'neg':'')}</div>
+    </div></section>`;
+}
+// Vertical bar chart, grade on the X axis (alphabetical), % of CLFs on the
+// Y axis - thin bars, one fixed colour per grade (A green / B blue / C gold
+// / D red); label shows only the % (kept small - it's a secondary label,
+// not the chart's main content); hovering a bar shows the exact count too.
+const GRADE_COLORS = {A:'#2F9C74', B:'#5B8AA6', C:'#CE9C3C', D:'#C55F49'};
+function drawGradeHistogram(svgId, entries, nFound){
+  const svg = document.getElementById(svgId); if(!svg) return;
+  const sorted = entries.slice().sort((a,b)=> a[0]<b[0]?-1:a[0]>b[0]?1:0);
+  const W=500,H=220,padL=28,padR=20,padT=24,padB=30, innerW=W-padL-padR, innerH=H-padT-padB;
+  const maxN = Math.max.apply(null, sorted.map(([,n])=>n).concat([1]));
+  const slot = innerW/sorted.length, barW = Math.min(slot*0.38, 30);
+  let bars = '', labels = '', valueLabels = '';
+  sorted.forEach(([g,n],i)=>{
+    const pct = n/nFound*100;
+    const h = (n/maxN)*innerH;
+    const x = padL + i*slot + (slot-barW)/2;
+    const y = padT + innerH - h;
+    const color = GRADE_COLORS[g] || cssVar('--primary');
+    bars += `<rect class="tip" data-tip="Grade ${g}: ${fmtNum(n)} CLFs (${pct.toFixed(1)}%)" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="3"/>`;
+    valueLabels += `<text x="${(x+barW/2).toFixed(1)}" y="${(y-6).toFixed(1)}" font-size="9" font-weight="700" text-anchor="middle" fill="${cssVar('--ink')}">${pct.toFixed(0)}%</text>`;
+    labels += `<text x="${(x+barW/2).toFixed(1)}" y="${H-10}" font-size="12" font-weight="600" text-anchor="middle" fill="${cssVar('--ink-soft')}">${g}</text>`;
+  });
+  const axis = `<line x1="${padL}" y1="${padT+innerH}" x2="${W-padR}" y2="${padT+innerH}" stroke="${cssVar('--line')}" stroke-width="1"/>`;
+  svg.innerHTML = axis + bars + valueLabels + labels;
+}
+function renderGroupAudit(){
+  document.getElementById('panel-audit').innerHTML = contextBox('audit') + renderGroupAuditScores() + renderGroupAuditIrreg();
+  const a = GROUP_DATA.audit;
+  if(a.n_found){
+    a.category_breakdown.forEach((c,i)=> drawRing('group-cat-ring-'+i, c.pct/100, grade(c.pct)));
+    drawGradeHistogram('group-grade-hist', Object.entries(a.grade_distribution), a.n_found);
+  }
+}
+
+// ---- Financial: DATA is pointed at GROUP_PSEUDO_CLF (shaped exactly like
+// a real CLF's .financial) so renderFinancial/renderFinSummary/
+// renderFinStatements from JS_FINANCIAL run completely UNCHANGED. The
+// district/state CONTEXT box already explains "summed across every CLF"
+// (see build_district_state_data.py's DISTRICT_CONTEXT/STATE_CONTEXT), so
+// no extra note is added here - a prior version prepended one via
+// `panel.innerHTML = note + panel.innerHTML`, which silently destroyed and
+// recreated the just-rendered #qtr-select (wiping its change listener) and
+// broke the quarter dropdown. ----
+function renderGroupFinancial(sub){
+  DATA = GROUP_PSEUDO_CLF;
+  renderFinancial(sub);
+}
+
+// ---- VRF: KPI Snapshot and Forecasts reuse renderVrfKpi/renderVrfForecasts
+// from JS_VRF UNCHANGED (DATA pointed at GROUP_PSEUDO_CLF). VO-Level
+// Breakdown / Bookkeeper Ranking are dropped entirely at this scope. "Needs
+// Attention" pictograms get their dot counts SCALED (1 square = N VOs) so
+// the total stays legible when summed across hundreds/thousands of VOs. ----
+function pictScale(total){
+  const candidates = [1,2,5,10,20,25,50,100,200,250,500,1000,2000,5000,10000,20000,50000];
+  for(let i=0;i<candidates.length;i++){ if(Math.ceil(total/candidates[i]) <= 48) return candidates[i]; }
+  return candidates[candidates.length-1];
+}
+function scaledPictogram(containerId, counts){
+  const total = counts.reduce((a,c)=>a+c.n,0);
+  const scale = pictScale(total);
+  const scaledCounts = counts.map(c=>({n: c.n>0 ? Math.max(Math.round(c.n/scale),1) : 0, cls:c.cls}));
+  drawPictogram(containerId, scaledCounts);
+  const el = document.getElementById(containerId);
+  if(el && scale>1) el.insertAdjacentHTML('afterend', `<div class="scale-note" style="font-size:11px;color:var(--ink-soft);margin-top:6px;">each square &asymp; ${fmtNum(scale)} VOs</div>`);
+}
+function renderGroupVRF(sub){
+  if(!GROUP_DATA.vrf.found){
+    document.getElementById('panel-vrf').innerHTML = contextBox('vrf') + `<section><div class="panel"><p class="disclaimer">${ERR_MSG_JS.vrf}</p></div></section>`;
+    return;
+  }
+  DATA = GROUP_PSEUDO_CLF;
+  const scope = isState() ? 'statewide' : `in ${GROUP_DATA.name}`;
+  const note = `<p class="hint" style="margin-bottom:14px;">Aggregated across ${fmtNum(GROUP_DATA.vrf.n_clfs_with_vrf)} of ${fmtNum(GROUP_DATA.vrf.n_total)} CLFs ${scope} with VRF data.</p>`;
+  let body = sub==='kpi' ? renderVrfKpi() : renderVrfForecasts();
+  const groupNoun = isState() ? 'Bihar' : `${GROUP_DATA.name} district`;
+  body = body.replace('Your CLF has missed out on', `${groupNoun} has missed out on`)
+    .replace('to the CLF for the Social Development Fund (SDF). This is the total the CLF should be collecting from all its VOs each month, and over the year, if every VO pays what it owes.',
+      `to their own CLF for the Social Development Fund (SDF). This is the total every CLF ${isState()?'in Bihar':'in the district'} should be collecting from its VOs, combined, each month and over the year, if every VO pays what it owes.`);
+  document.getElementById('panel-vrf').innerHTML = contextBox('vrf') + note + body;
+  if(sub==='kpi'){
+    const v = DATA.vrf;
+    const savPct = v.expected_savings ? Math.min(v.total_savings/v.expected_savings,1) : 0;
+    drawRing('ring-savings', savPct, cssVar('--primary'), cssVar('--low'));
+    const tot = v.total_received+v.total_savings+v.total_interest;
+    drawDonut('ring-composition', [{frac:v.total_received/tot,color:cssVar('--gold'),tip:'Government Grant: '+fmtRs(v.total_received)},
+      {frac:v.total_savings/tot,color:cssVar('--primary'),tip:'Savings: '+fmtRs(v.total_savings)},
+      {frac:v.total_interest/tot,color:cssVar('--ink'),tip:'Interest: '+fmtRs(v.total_interest)}]);
+    scaledPictogram('pict-coverage', [{n:v.n_vo-v.incomplete_coverage,cls:'good'},{n:v.incomplete_coverage,cls:'flag'}]);
+    scaledPictogram('pict-interest', [{n:v.received_vo-v.idle_vo,cls:'good'},{n:v.idle_vo,cls:'flag'},{n:v.n_vo-v.received_vo,cls:'na'}]);
+  }
+  if(sub==='forecasts'){
+    drawVrfLineChart('savings');
+    document.querySelectorAll('.chart-tab').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        document.querySelectorAll('.chart-tab').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active'); drawVrfLineChart(btn.dataset.series);
+      });
+    });
+  }
+}
+
+// ---- VPRP: DATA pointed at GROUP_PSEUDO_CLF (vprp.years shaped exactly
+// like a real CLF's) so renderVPRP/renderVprpEnt/Pgsrd/Sdp from JS_VPRP run
+// completely UNCHANGED - all 3 subtabs, full parity. ----
+function renderGroupVPRP(sub){
+  DATA = GROUP_PSEUDO_CLF;
+  renderVPRP(sub);
+}
+
+// ---- Scoring: Overall/Category Summary use REAL cross-district ranks
+// (computed by build_district_state_data.py against all 38 districts) at
+// district scope; at state scope there's no rank to show (the state IS the
+// top level), so those sections fall back to a plain score bar with no
+// "State" comparison line - still wrapped in the same margin as
+// scoreRankBar so the rows aren't cramped. CLF Rankings is dual-mode: the
+// full CLF list (district) or the top 20 + bottom 20 statewide (state),
+// sharing one 9-column table shape - see clf_ranking_mode in the data. ----
+function categoryScoreBlock(label, score, rank, n){
+  // Category Summary's 5 category names never get a hover tip, at any
+  // level - matches the CLF tracker's own original Category Summary design
+  // (only individual metrics in By Category get tooltips, not categories).
+  if(isState()) return `<div style="margin-bottom:20px;">${gradedBar(label, score||0, '')}</div>`;
+  return scoreRankBar(label, score, rank, n, '');
+}
+function scoreRankBar(label, score, rank, n, tip){
+  // Same tip===undefined vs tip==='' distinction as gradedBar - see there.
+  const t = tip !== undefined ? tip : (label && TIPS[label]);
+  const lbl = label ? (t ? `<span class="tip" data-tip="${t}">${label}</span>` : label) : '';
+  const rankTxt = rank!=null && n!=null ? `${fmtNum(rank)}${ord(rank)} of ${fmtNum(n)}` : ERR_MSG_JS.not_found;
+  return `<div style="margin-bottom:20px;">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">
+      <div style="font-size:14px;font-weight:600;">${lbl}</div>
+      <div style="font-size:26px;font-weight:700;color:var(--gold);font-variant-numeric:tabular-nums;white-space:nowrap;">${score!=null?score+'%':'—'}</div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin:2px 0 6px;">
+      <span style="font-size:11.5px;font-weight:700;letter-spacing:.06em;color:var(--gold);text-transform:uppercase;">State</span>
+      <span style="font-size:13px;color:var(--ink-soft);">${rankTxt}</span>
+    </div>
+    <div class="bar-track"><div class="fill" style="width:${score||0}%;background:var(--gold)"></div></div>
+  </div>`;
+}
+// State-level "By Category" metric row: averaging a percentile against its
+// OWN reference population is close to a mathematical tautology at state
+// scope (a full population's average percentile of itself converges to ~50
+// regardless of the underlying data - confirmed empirically against the
+// real numbers here, most state avg_state_pctl values landed within 1-2
+// points of 50). So instead of a percentile bar, state shows the metric's
+// actual statewide average value (mapped 1:1 to the exact column
+// build_tracker_data.py itself scores that metric from) plus which
+// district is doing best/worst on it - both real, neither self-referential.
+// A few metrics (Platform Approval Status, Insurance/Aadhaar Coverage)
+// don't have a raw value available anywhere in the built data, so only the
+// best/worst-district line shows for those.
+function fmtMetricRaw(value, fmt){
+  if(value==null || !fmt) return null;
+  if(fmt==='pct') return value.toFixed(1)+'%';
+  if(fmt==='pct_signed') return (value>=0?'+':'')+value.toFixed(1)+'%';
+  if(fmt==='pct_of_1') return (value*100).toFixed(1)+'%';
+  if(fmt==='multiplier') return value.toFixed(2)+'×';
+  if(fmt==='rs') return fmtRs(value);
+  if(fmt==='rs_per_member') return fmtRs(value)+' per member';
+  if(fmt.indexOf('of_')===0) return value.toFixed(1)+' of '+fmt.split('_')[1];
+  if(fmt==='types') return value.toFixed(1)+' types';
+  return String(value);
+}
+function metricStateBlock(m){
+  const t = TIPS[m.label];
+  const lbl = t ? `<span class="tip" data-tip="${t}">${m.label}</span>` : m.label;
+  const rawTxt = fmtMetricRaw(m.raw_value, m.raw_fmt);
+  const descriptor = m.raw_descriptor ? `<div style="font-size:11.5px;color:var(--ink-soft);text-align:right;">${m.raw_descriptor}</div>` : '';
+  const bw = (m.best_district && m.worst_district) ? `<div style="font-size:12.5px;color:var(--ink-soft);margin-top:6px;">
+      Best: <a href="#district/${m.best_district.slug}" class="district-link">${m.best_district.name}</a>
+      &nbsp;&middot;&nbsp; Worst: <a href="#district/${m.worst_district.slug}" class="district-link">${m.worst_district.name}</a>
+    </div>` : '';
+  return `<div style="margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--line);">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">
+      <div style="font-size:14px;font-weight:600;">${lbl}</div>
+      <div style="font-size:18px;font-weight:700;color:var(--gold);white-space:nowrap;">${rawTxt!=null?rawTxt:'—'}</div>
+    </div>
+    ${descriptor}
+    ${bw}
+  </div>`;
+}
+function renderGroupScoringOverall(){
+  const s = GROUP_DATA.scoring;
+  const cats = Object.entries(s.category_scores);
+  const scoreLabel = (isState()?'Statewide':'District')+' Overall Score';
+  const scoredSub = `${fmtNum(s.n_clfs_scored)} of ${fmtNum(s.n_total)} CLFs scored`;
+  const soloTile = isState() ? `<div class="tiles n1" style="margin-bottom:16px;">${tile(scoreLabel, s.overall_score+' / 100', scoredSub, 'big-value')}</div>` : '';
+  const standingBlock = isState() ? '' : `<div class="standing-grid">
+        ${tile(scoreLabel, s.overall_score+' / 100', scoredSub, 'big-value')}
+        ${standingCard('state', s.overall_score, s.overall_state_rank, s.n_districts, 'Overall Score', 'Standing vs. State')}
+      </div>`;
+  return `<section><div class="section-head"><h2 class="serif">Overall Score</h2><span class="hint">average of each CLF's own Overall Score, equal weight per CLF</span></div>
+    <div class="panel">${soloTile}${standingBlock}</div></section>
+  <section><div class="section-head"><h2 class="serif">Category Summary</h2></div>
+    <div class="panel">${cats.map(([k,v])=>{ const cr = s.category_ranks[k]; return categoryScoreBlock(k, v, cr&&cr.rank, cr&&cr.n); }).join('')}</div></section>`;
+}
+function renderGroupScoringByCategory(){
+  const s = GROUP_DATA.scoring;
+  const scopeText = isState() ? 'across all CLFs in Bihar' : `across all CLFs in ${GROUP_DATA.name} district`;
+  const desc = isState()
+    ? `Each metric below shows the actual statewide average value (not a percentile - averaging a percentile against the whole state it's drawn from converges to ~50 regardless of the underlying data), plus which district is doing best and worst on it.`
+    : `Each metric below is its average state percentile, averaged ${scopeText} that have a score for it.`;
+  return Object.entries(s.category_scores).map(([catName,score])=>{
+    const metrics = s.category_metrics[catName] || [];
+    const body = isState()
+      ? metrics.map(m=>metricStateBlock(m)).join('')
+      : metrics.map(m=>scoreRankBar(m.label, m.avg_state_pctl, m.rank, m.n)).join('');
+    return `<section><div class="section-head"><h2 class="serif">${catName}</h2><span class="hint"><b>${isState()?'Statewide':'District'} avg: ${score!=null?score+'/100':ERR_MSG_JS.not_found}</b></span></div>
+      <div class="panel">
+        <p class="desc" style="max-width:none;margin-bottom:14px;">${desc}</p>
+        ${metrics.length ? body : `<p class="disclaimer">${ERR_MSG_JS.not_found}</p>`}
+      </div></section>`;
+  }).join('');
+}
+const CLF_RANK_COLS = () => {
+  const mode = GROUP_DATA.scoring.clf_ranking_mode;
+  return [
+    {label:'Rank', key: mode==='top_bottom_20' ? 'state_rank' : 'district_rank'},
+    {label:'CLF', key:'name'},
+    {label: mode==='top_bottom_20' ? 'District' : 'Block', key: mode==='top_bottom_20' ? 'district' : 'block'},
+    {label:'Fund Utilization', num:true, key:'Fund Utilization & Loan Activity'},
+    {label:'Financial Health', num:true, key:'Financial Health'},
+    {label:'VRF Fund Health', num:true, key:'VRF Fund Health'},
+    {label:'Governance', num:true, key:'Governance & Compliance'},
+    {label:'Welfare', num:true, key:'Welfare and Livelihood'},
+    {label:'Overall Score', num:true, key:'overall_score'},
+  ];
+};
+// tier ('top'/'bottom') is a fixed property stamped once at data-build
+// time by build_district_state_data.py's own overall-rank sort - NOT
+// re-derived from wherever a row currently sits after the table gets
+// sorted by a different column, which would make the colour meaningless (a
+// bottom-20 CLF with one strong sub-score could sort near the top of the
+// visible list and wrongly render green).
+function clfRankRow(r){
+  const mode = GROUP_DATA.scoring.clf_ranking_mode;
+  const rankNum = mode==='top_bottom_20' ? r.state_rank : r.district_rank;
+  const tierClass = r.tier==='bottom' ? ' tier-bottom' : r.tier==='top' ? ' tier-top' : '';
+  // District name is plain text here (not linked) - the District Performance
+  // tab is where district links live; this table is about CLFs.
+  const locationCell = mode==='top_bottom_20' ? r.district : r.block;
+  return [
+    `<span class="rank-cell">${fmtNum(rankNum)||'—'}</span>`,
+    `<a href="#clf/${r.mis_id}" class="clf-link${tierClass}">${r.name}</a>`, locationCell,
+    r.categories['Fund Utilization & Loan Activity']!=null?r.categories['Fund Utilization & Loan Activity']:'—',
+    r.categories['Financial Health']!=null?r.categories['Financial Health']:'—',
+    r.categories['VRF Fund Health']!=null?r.categories['VRF Fund Health']:'—',
+    r.categories['Governance & Compliance']!=null?r.categories['Governance & Compliance']:'—',
+    r.categories['Welfare and Livelihood']!=null?r.categories['Welfare and Livelihood']:'—',
+    r.overall_score!=null?`<div class="score-cell"><div class="score-bar"><div class="fill" style="width:${r.overall_score}%"></div></div><span class="score-num">${r.overall_score}</span></div>`:'—',
+  ];
+}
+function flattenedRankings(){
+  return GROUP_DATA.scoring.clf_rankings.map(r=>({...r, ...r.categories}));
+}
+function renderGroupScoringRankings(){
+  const mode = GROUP_DATA.scoring.clf_ranking_mode;
+  const title = mode==='top_bottom_20' ? 'Top &amp; Bottom 20 CLFs' : 'CLF Performance';
+  const hint = mode==='top_bottom_20'
+    ? `top 20 and bottom 20 of all ${fmtNum(GROUP_DATA.scoring.n_total)} CLFs in Bihar &middot; click a column to sort &middot; click a CLF or District to open its tracker`
+    : `all ${GROUP_DATA.scoring.clf_rankings.length} CLFs in ${GROUP_DATA.name} district &middot; click a column to sort &middot; click a CLF to open its tracker`;
+  return `<section><div class="section-head"><h2 class="serif">${title}</h2><span class="hint">${hint}</span></div>
+    <div class="panel"><div id="clf-rankings-container"></div></div></section>`;
+}
+// ---- District Performance: same 9-column shape as CLF Rankings, one level
+// up - every district in Bihar, ranked by Overall Score (real cross-
+// district ranks, computed the same two-pass way as CLF ranks). ----
+const DISTRICT_RANK_COLS = () => [
+  {label:'Rank', key:'state_rank'}, {label:'District', key:'name'}, {label:'CLFs', num:true, key:'n_clfs'},
+  {label:'Fund Utilization', num:true, key:'Fund Utilization & Loan Activity'},
+  {label:'Financial Health', num:true, key:'Financial Health'},
+  {label:'VRF Fund Health', num:true, key:'VRF Fund Health'},
+  {label:'Governance', num:true, key:'Governance & Compliance'},
+  {label:'Welfare', num:true, key:'Welfare and Livelihood'},
+  {label:'Overall Score', num:true, key:'overall_score'},
+];
+function districtRankRow(r){
+  return [
+    `<span class="rank-cell">${fmtNum(r.state_rank)||'—'}</span>`,
+    `<a href="#district/${r.slug}" class="district-link">${r.name}</a>`, fmtNum(r.n_clfs),
+    r.categories['Fund Utilization & Loan Activity']!=null?r.categories['Fund Utilization & Loan Activity']:'—',
+    r.categories['Financial Health']!=null?r.categories['Financial Health']:'—',
+    r.categories['VRF Fund Health']!=null?r.categories['VRF Fund Health']:'—',
+    r.categories['Governance & Compliance']!=null?r.categories['Governance & Compliance']:'—',
+    r.categories['Welfare and Livelihood']!=null?r.categories['Welfare and Livelihood']:'—',
+    r.overall_score!=null?`<div class="score-cell"><div class="score-bar"><div class="fill" style="width:${r.overall_score}%"></div></div><span class="score-num">${r.overall_score}</span></div>`:'—',
+  ];
+}
+function flattenedDistrictRankings(){
+  return GROUP_DATA.scoring.district_rankings.map(r=>({...r, ...r.categories}));
+}
+function renderGroupScoringDistrictRankings(){
+  return `<section><div class="section-head"><h2 class="serif">District Performance</h2><span class="hint">all ${GROUP_DATA.scoring.district_rankings.length} districts in Bihar &middot; click a column to sort &middot; click a District to open its tracker</span></div>
+    <div class="panel"><div id="district-rankings-container"></div></div></section>`;
+}
+function renderGroupScoring(sub){
+  const body = sub==='overall' ? renderGroupScoringOverall()
+    : sub==='bycategory' ? renderGroupScoringByCategory()
+    : sub==='rankings' ? renderGroupScoringRankings()
+    : renderGroupScoringDistrictRankings();
+  document.getElementById('panel-scoring').innerHTML = contextBox('scoring') + body;
+  if(sub==='rankings'){ makeSortableTable('clf-rankings-container', CLF_RANK_COLS(), flattenedRankings(), clfRankRow); }
+  if(sub==='districtrankings'){ makeSortableTable('district-rankings-container', DISTRICT_RANK_COLS(), flattenedDistrictRankings(), districtRankRow); }
+}
+
 const TABS = {
-  overview: {label:'Overview', render:renderOverview, subtabs:{profile:'Profile', members:'Members'}},
+  overview: {label:'Overview', render:renderOverview, subtabs:{profile:'Profile', members:'Members', vo:'VO Overview'}},
   audit: {label:'Audit Reports', render:renderAudit, subtabs:null},
   financial: {label:'Financial Records', render:renderFinancial, subtabs:{summary:'Summary', statements:'Statements'}},
   vrf: {label:'Vulnerability Reduction Fund', render:renderVRF, subtabs:{kpi:'KPI Snapshot', vobreak:'VO-Level Breakdown', bkrank:'Bookkeeper & CLF Rankings', forecasts:'Forecasts'}},
   vprp: {label:'Village Poverty Reduction Plan', render:renderVPRP, subtabs:{entitlements:'Entitlements', pgsrd:'Public Goods, Services, and Resource Development', sdp:'Social Development Plan'}},
   scoring: {label:'Scoring & Ranking', render:renderScoring, subtabs:{overall:'Overall', bycategory:'By Category'}},
 };
+const TABS_DISTRICT = {
+  overview: {label:'Overview', render:renderGroupOverview, subtabs:{profile:'Profile', members:'Members'}},
+  audit: {label:'Audit Reports', render:renderGroupAudit, subtabs:null},
+  financial: {label:'Financial Records', render:renderGroupFinancial, subtabs:{summary:'Summary', statements:'Statements'}},
+  vrf: {label:'Vulnerability Reduction Fund', render:renderGroupVRF, subtabs:{kpi:'KPI Snapshot', forecasts:'Forecasts'}},
+  vprp: {label:'Village Poverty Reduction Plan', render:renderGroupVPRP, subtabs:{entitlements:'Entitlements', pgsrd:'Public Goods, Services, and Resource Development', sdp:'Social Development Plan'}},
+  scoring: {label:'Scoring & Ranking', render:renderGroupScoring, subtabs:{overall:'Overall', bycategory:'By Category', rankings:'CLF Performance'}},
+};
+const TABS_STATE = Object.assign({}, TABS_DISTRICT, {
+  scoring: {label:'Scoring & Ranking', render:renderGroupScoring, subtabs:{overall:'Overall', bycategory:'By Category', rankings:'CLF Performance', districtrankings:'District Performance'}},
+});
 let currentTab='overview', currentSub='profile';
+let CURRENT_VIEW = 'landing'; // 'landing' | 'clf' | 'district' | 'state'
+function isState(){ return CURRENT_VIEW === 'state'; }
+function getTabs(){
+  if(CURRENT_VIEW==='district') return TABS_DISTRICT;
+  if(CURRENT_VIEW==='state') return TABS_STATE;
+  return TABS;
+}
 
 function renderTabBar(){
-  document.getElementById('tabbar').innerHTML = Object.entries(TABS).map(([id,t])=>
+  const tabs = getTabs();
+  document.getElementById('tabbar').innerHTML = Object.entries(tabs).map(([id,t])=>
     `<button class="tabbtn ${id===currentTab?'active':''}" data-tab="${id}">${t.label}</button>`).join('');
   document.querySelectorAll('.tabbtn').forEach(b=>b.addEventListener('click',()=>{
-    currentTab=b.dataset.tab; currentSub=TABS[currentTab].subtabs ? Object.keys(TABS[currentTab].subtabs)[0] : null; renderAll();
+    currentTab=b.dataset.tab; currentSub=tabs[currentTab].subtabs ? Object.keys(tabs[currentTab].subtabs)[0] : null; renderAll();
   }));
 }
 function renderSubtabBar(){
-  const subs = TABS[currentTab].subtabs;
+  const subs = getTabs()[currentTab].subtabs;
   const bar = document.getElementById('subtabbar');
   if(!subs){ bar.innerHTML = ''; bar.style.display = 'none'; return; }
   bar.style.display = '';
@@ -1288,13 +1841,66 @@ function renderSubtabBar(){
     currentSub=b.dataset.sub; renderAll();
   }));
 }
+// Masthead is fully dynamic now (District/State views have no fixed
+// crumb fields) - CLF view keeps the same crumb line as before, just built
+// as a template string instead of writing into static spans.
+function renderMasthead(){
+  const el = document.getElementById('masthead-content');
+  if(CURRENT_VIEW === 'clf'){
+    const o = DATA.overview;
+    const niceName = o.clf_name_lokos.replace(/\w\S*/g, t=>t.charAt(0).toUpperCase()+t.substr(1).toLowerCase());
+    const slug = (SHARED.district_slugs && SHARED.district_slugs[o.district]) || '';
+    el.innerHTML = `<button id="dyn-back-btn" class="back-link">&larr; Back</button>
+      <h1 class="serif">${niceName}</h1>
+      <div class="crumbs"><a href="#district/${slug}" class="district-link">${o.district}</a> District &nbsp;&middot;&nbsp; <b>${o.block}</b> Block &nbsp;&middot;&nbsp; MIS ID <b>${o.mis_id}</b> &nbsp;&middot;&nbsp; LokOS Code <b>${o.clfcode}</b></div>`;
+  } else if(CURRENT_VIEW === 'district'){
+    el.innerHTML = `<button id="dyn-back-btn" class="back-link">&larr; Back</button>
+      <h1 class="serif">${GROUP_DATA.name} District</h1>
+      <div class="crumbs">Aggregate of <b>${fmtNum(GROUP_DATA.overview.n_clfs)}</b> CLFs &nbsp;&middot;&nbsp; District-Level Tracker &nbsp;&middot;&nbsp; <a href="#state" class="district-link">View Bihar Statewide &rarr;</a></div>`;
+  } else if(CURRENT_VIEW === 'state'){
+    el.innerHTML = `<button id="dyn-back-btn" class="back-link">&larr; Back</button>
+      <h1 class="serif">Bihar Statewide</h1>
+      <div class="crumbs">Aggregate of <b>${fmtNum(GROUP_DATA.overview.n_clfs)}</b> CLFs across <b>${fmtNum(MANIFEST.counts.districts)}</b> districts &nbsp;&middot;&nbsp; State-Level Tracker</div>`;
+  }
+  // "Back" returns to wherever the user actually came from (in-app, via
+  // history.back()) when there IS somewhere to go back to; falls back to
+  // the search landing page for a cold/shared link with no prior in-app
+  // navigation, where history.back() would just leave the site entirely.
+  const backBtn = document.getElementById('dyn-back-btn');
+  if(backBtn) backBtn.addEventListener('click', ()=>{ if(inAppNavCount > 1){ history.back(); } else { backToSearch(); } });
+}
+// CONTEXT/ERR_MSG_JS are swapped wholesale for the active view on every
+// render - the CLF tracker's own copies say "your CLF" throughout, which is
+// wrong once these same functions (Financial, VPRP, VRF KPI/Forecasts) run
+// against a District or State aggregate instead of one CLF. district_err_msg
+// is a {name}-templated copy (one dict for all 38 districts), substituted
+// with the currently loaded district's real name here.
 function renderAll(){
-  renderTabBar(); renderSubtabBar();
+  if(CURRENT_VIEW==='district'){
+    Object.assign(CONTEXT, SHARED.district_context);
+    const out = {};
+    Object.entries(SHARED.district_err_msg_tmpl).forEach(([k,v])=> out[k] = v.replace(/\{name\}/g, GROUP_DATA.name));
+    Object.assign(ERR_MSG_JS, out);
+    Object.assign(TIPS, ORIGINAL_TIPS, SHARED.district_tips || {});
+  } else if(CURRENT_VIEW==='state'){
+    Object.assign(CONTEXT, SHARED.state_context);
+    Object.assign(ERR_MSG_JS, SHARED.state_err_msg);
+    Object.assign(TIPS, ORIGINAL_TIPS, SHARED.state_tips || {});
+  } else {
+    Object.assign(CONTEXT, ORIGINAL_CONTEXT);
+    Object.assign(ERR_MSG_JS, ORIGINAL_ERR_MSG);
+    Object.assign(TIPS, ORIGINAL_TIPS);
+  }
+  renderMasthead(); renderTabBar(); renderSubtabBar();
   document.querySelectorAll('.tabpanel').forEach(p=>p.classList.toggle('active', p.id==='panel-'+currentTab));
-  TABS[currentTab].render(currentSub);
+  getTabs()[currentTab].render(currentSub);
 }
 
 let MANIFEST = null;
+let SHARED = null;
+let ORIGINAL_CONTEXT = {};
+let ORIGINAL_ERR_MSG = {};
+let ORIGINAL_TIPS = {};
 const CLF_INDEX = {}; // mis_id (number) -> {n, district, block}
 const JSON_CACHE = {};
 
@@ -1338,6 +1944,13 @@ function populateClfSelect(districtName, blockName){
   sel.disabled = false;
   sel.innerHTML = `<option value="">Select CLF…</option>` + b.clfs.slice().sort((a,c)=>a.n.localeCompare(c.n)).map(c=>`<option value="${c.id}">${c.n}</option>`).join('');
 }
+// ---- District/State tracker finder (separate from the CLF drill-down
+// dropdowns above - "in addition to, not replacing, Find your CLF") ----
+function populateGroupDistrictSelect(){
+  const sel = document.getElementById('sel-group-district');
+  sel.innerHTML = `<option value="">Select District to view its Tracker…</option>` +
+    MANIFEST.districts.map(d=>`<option value="${SHARED.district_slugs[d.name]}">${d.name}</option>`).join('');
+}
 
 function showLandingError(msg){
   const el = document.getElementById('nav-error');
@@ -1346,57 +1959,113 @@ function showLandingError(msg){
 function clearLandingError(){
   document.getElementById('nav-error').style.display = 'none';
 }
+function showLanding(){
+  document.getElementById('view-tracker').classList.remove('active');
+  document.getElementById('view-landing').classList.add('active');
+}
+function showTracker(){
+  document.getElementById('view-landing').classList.remove('active');
+  document.getElementById('view-tracker').classList.add('active');
+}
 
 async function loadClf(misId){
   misId = +misId;
-  if(!CLF_INDEX[misId]){ showLandingError(`No CLF found with MIS ID ${misId}.`); return; }
+  if(!CLF_INDEX[misId]){ showLandingError(`No CLF found with MIS ID ${misId}.`); showLanding(); return; }
   clearLandingError();
   try{
     const data = await fetchJson(`data/clfs/${misId}.json`);
     DATA = data;
-    const info = CLF_INDEX[misId];
-    document.getElementById('crumb-name').textContent = data.overview.clf_name_lokos.replace(/\w\S*/g, t=>t.charAt(0).toUpperCase()+t.substr(1).toLowerCase());
-    document.getElementById('crumb-district').textContent = info.district;
-    document.getElementById('crumb-block').textContent = info.block;
-    document.getElementById('crumb-mis').textContent = misId;
-    document.getElementById('crumb-code').textContent = data.overview.clfcode;
-    document.getElementById('view-landing').classList.remove('active');
-    document.getElementById('view-tracker').classList.add('active');
-    currentTab='overview'; currentSub='profile'; finQtrIdx = DATA.financial.quarters.length - 1; vprpYear = 2025; scoreQtrIdx = DATA.scoring.default_idx;
+    CURRENT_VIEW = 'clf';
+    showTracker();
+    currentTab='overview'; currentSub='profile'; finQtrIdx = DATA.financial.quarters.length - 1; vprpYear = 2025; vprpGp = 'ALL'; voDetailCode = null; scoreQtrIdx = DATA.scoring.default_idx;
     renderAll();
-    window.location.hash = 'clf/'+misId;
   } catch(e){
     showLandingError(`Could not load data for MIS ID ${misId}. It may not have data available.`);
+    showLanding();
+  }
+}
+async function loadDistrict(slug){
+  clearLandingError();
+  try{
+    const data = await fetchJson(`data/districts/${slug}.json`);
+    GROUP_DATA = data; GROUP_PSEUDO_CLF = data.pseudo_clf;
+    CURRENT_VIEW = 'district';
+    showTracker();
+    currentTab='overview'; currentSub='profile'; finQtrIdx = GROUP_DATA.financial.quarters.length - 1; vprpYear = 2025; vprpGp = 'ALL';
+    renderAll();
+  } catch(e){
+    showLandingError(`Could not load the District Tracker.`);
+    showLanding();
+  }
+}
+async function loadState(){
+  clearLandingError();
+  try{
+    const data = await fetchJson(`data/state.json`);
+    GROUP_DATA = data; GROUP_PSEUDO_CLF = data.pseudo_clf;
+    CURRENT_VIEW = 'state';
+    showTracker();
+    currentTab='overview'; currentSub='profile'; finQtrIdx = GROUP_DATA.financial.quarters.length - 1; vprpYear = 2025; vprpGp = 'ALL';
+    renderAll();
+  } catch(e){
+    showLandingError(`Could not load the Statewide Tracker.`);
+    showLanding();
   }
 }
 
 function backToSearch(){
-  document.getElementById('view-tracker').classList.remove('active');
-  document.getElementById('view-landing').classList.add('active');
   window.location.hash = '';
+}
+
+// Single hash-driven router - every navigation (dropdowns, MIS-ID search,
+// District/State buttons, in-page CLF/District links) sets window.location
+// hash and lets the resulting 'hashchange' event do the actual loading,
+// rather than each entry point calling a loader directly. That keeps there
+// being exactly one place (here) that decides what's currently on screen,
+// so a shared link or the browser's own back/forward button both work.
+// inAppNavCount counts how many times THIS page has routed since it loaded -
+// used by the masthead's "Back" button to decide whether history.back() has
+// somewhere real to go (a page visited earlier in this same session) or
+// would just leave the site entirely (a cold/shared link, nothing to go
+// back to in-app).
+let inAppNavCount = 0;
+function handleHash(){
+  inAppNavCount++;
+  const h = window.location.hash;
+  const mClf = h.match(/^#clf\/(\d+)$/);
+  const mDist = h.match(/^#district\/([a-z0-9-]+)$/);
+  if(mClf) loadClf(mClf[1]);
+  else if(mDist) loadDistrict(mDist[1]);
+  else if(h === '#state') loadState();
+  else showLanding();
 }
 
 async function initShell(){
   const [manifest, shared] = await Promise.all([fetchJson('data/manifest.json'), fetchJson('data/shared.json')]);
-  MANIFEST = manifest; TIPS = shared.tips || {}; ERR_MSG_JS = shared.err_msg || {}; FOOTNOTES = shared.footnotes || {}; CONTEXT = shared.context || {};
+  MANIFEST = manifest; SHARED = shared;
+  TIPS = shared.tips || {}; ERR_MSG_JS = shared.err_msg || {}; FOOTNOTES = shared.footnotes || {}; CONTEXT = shared.context || {};
+  ORIGINAL_CONTEXT = Object.assign({}, CONTEXT);
+  ORIGINAL_ERR_MSG = Object.assign({}, ERR_MSG_JS);
+  ORIGINAL_TIPS = Object.assign({}, TIPS);
   indexManifest(MANIFEST);
   populateDistrictSelect();
+  populateGroupDistrictSelect();
   document.getElementById('finder-count').textContent = `${MANIFEST.counts.clfs} CLFs across ${MANIFEST.counts.districts} districts`;
 
   document.getElementById('sel-district').addEventListener('change', e=>{ populateBlockSelect(e.target.value); });
   document.getElementById('sel-block').addEventListener('change', e=>{ populateClfSelect(document.getElementById('sel-district').value, e.target.value); });
-  document.getElementById('sel-clf').addEventListener('change', e=>{ if(e.target.value) loadClf(e.target.value); });
+  document.getElementById('sel-clf').addEventListener('change', e=>{ if(e.target.value) window.location.hash = 'clf/'+e.target.value; });
   document.getElementById('btn-go-id').addEventListener('click', ()=>{
     const v = document.getElementById('input-clfid').value.trim();
-    if(v) loadClf(v);
+    if(v) window.location.hash = 'clf/'+v;
   });
   document.getElementById('input-clfid').addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('btn-go-id').click(); });
-  document.getElementById('back-link').addEventListener('click', backToSearch);
+  document.getElementById('sel-group-district').addEventListener('change', e=>{ if(e.target.value) window.location.hash = 'district/'+e.target.value; });
+  document.getElementById('btn-view-state').addEventListener('click', ()=>{ window.location.hash = 'state'; });
 
   initTooltips();
-
-  const hashMatch = window.location.hash.match(/^#clf\/(\d+)$/);
-  if(hashMatch) loadClf(hashMatch[1]);
+  window.addEventListener('hashchange', handleHash);
+  handleHash();
 }
 initShell();
 
