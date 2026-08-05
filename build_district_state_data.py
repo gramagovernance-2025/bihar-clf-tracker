@@ -396,27 +396,44 @@ def aggregate_group(CLFS, name, clf_ranking_mode="full"):
             round((c["vprp"]["years"].get(yr_key, {}).get("n_demands", 0) or 0) * (c["vprp"]["years"].get(yr_key, {}).get("pct_nrega_accessed") or 0) / 100)
             for c in CLFS)
 
-        scheme_demand, scheme_raw_map = {}, {}
+        scheme_demand, scheme_n_vo, scheme_raw_map = {}, {}, {}
         for c in CLFS:
             for s in c["vprp"]["years"].get(yr_key, {}).get("by_scheme", []) or []:
                 scheme_demand[s["scheme"]] = scheme_demand.get(s["scheme"], 0) + s["demanded"]
+                scheme_n_vo[s["scheme"]] = scheme_n_vo.get(s["scheme"], 0) + (s.get("n_vo") or 0)
                 scheme_raw_map[s["scheme"]] = s["raw_scheme"]
-        by_scheme_agg = [{"scheme": k, "raw_scheme": scheme_raw_map[k], "demanded": v}
+        by_scheme_agg = [{"scheme": k, "raw_scheme": scheme_raw_map[k], "demanded": v, "n_vo": scheme_n_vo.get(k) or None}
                           for k, v in sorted(scheme_demand.items(), key=lambda kv: -kv[1])]
 
-        other_schemes = set()
+        other_schemes, has_nrega = set(), False
         for c in CLFS:
             for s in c["vprp"]["years"].get(yr_key, {}).get("by_scheme", []) or []:
-                if s["raw_scheme"] != "mgnregs-job-card":
+                if s["raw_scheme"] == "mgnregs-job-card":
+                    has_nrega = True
+                else:
                     other_schemes.add(s["raw_scheme"])
+        n_schemes_total = len(other_schemes) + (1 if has_nrega else 0)
+        # VOs are strictly nested under one CLF each, so summing each CLF's own
+        # VO-requesting count across the district/state is an exact count, not
+        # an approximation - unlike departments below, which recur across CLFs.
+        n_vo_requesting_ent = sum(c["vprp"]["years"].get(yr_key, {}).get("n_vo_requesting_ent") or 0 for c in CLFS)
+        n_vo_requesting_pgsrd = sum(c["vprp"]["years"].get(yr_key, {}).get("n_vo_requesting_pgsrd") or 0 for c in CLFS)
+        n_vo_sdp = sum(c["vprp"]["years"].get(yr_key, {}).get("n_vo") or 0 for c in CLFS)
 
         state_breakdown = {}
         for c in CLFS:
             for k, v in (c["vprp"]["years"].get(yr_key, {}).get("state_scheme_breakdown") or {}).items():
                 demanded = v.get("demanded", 0) if isinstance(v, dict) else v
-                entry = state_breakdown.setdefault(k, {"demanded": 0})
+                n_vo = v.get("n_vo", 0) if isinstance(v, dict) else 0
+                entry = state_breakdown.setdefault(k, {"demanded": 0, "n_vo": 0})
                 entry["demanded"] += demanded
-        state_breakdown = dict(sorted(state_breakdown.items(), key=lambda kv: -kv[1]["demanded"])) if state_breakdown else None
+                entry["n_vo"] += n_vo
+        if state_breakdown:
+            for entry in state_breakdown.values():
+                entry["n_vo"] = entry["n_vo"] or None
+            state_breakdown = dict(sorted(state_breakdown.items(), key=lambda kv: -kv[1]["demanded"]))
+        else:
+            state_breakdown = None
 
         n_pgsrd_total = sum(c["vprp"]["years"].get(yr_key, {}).get("n_pgsrd", 0) for c in CLFS)
         pgsrd_type_counts = {}
@@ -435,10 +452,10 @@ def aggregate_group(CLFS, name, clf_ranking_mode="full"):
         for c in CLFS:
             for it in c["vprp"]["years"].get(yr_key, {}).get("pgsrd_items") or []:
                 key = (it["item_demanded"], it["pgsrd_type"])
-                e = pgsrd_items_agg.setdefault(key, {"n": 0, "units": 0})
-                e["n"] += it["n"]; e["units"] += it["units"]
+                e = pgsrd_items_agg.setdefault(key, {"n": 0, "units": 0, "n_vo": 0})
+                e["n"] += it["n"]; e["units"] += it["units"]; e["n_vo"] += (it.get("n_vo") or 0)
         pgsrd_items_list = sorted(
-            [{"item_demanded": k[0], "pgsrd_type": k[1], "n": v["n"], "units": v["units"]} for k, v in pgsrd_items_agg.items()],
+            [{"item_demanded": k[0], "pgsrd_type": k[1], "n": v["n"], "units": v["units"], "n_vo": v["n_vo"] or None} for k, v in pgsrd_items_agg.items()],
             key=lambda r: -r["n"])[:30]  # cap for state-level payload size
 
         sdg_theme_agg, gpdp_area_agg = {}, {}
@@ -465,12 +482,13 @@ def aggregate_group(CLFS, name, clf_ranking_mode="full"):
         sdp_issues_agg = {}
         for c in CLFS:
             for it in c["vprp"]["years"].get(yr_key, {}).get("sdp_issues") or []:
-                e = sdp_issues_agg.setdefault(it["social_issue"], {"n": 0, "affected": 0, "has_affected": False})
+                e = sdp_issues_agg.setdefault(it["social_issue"], {"n": 0, "affected": 0, "has_affected": False, "n_vo": 0})
                 e["n"] += it["n"]
+                e["n_vo"] += (it.get("n_vo") or 0)
                 if it.get("affected") is not None:
                     e["affected"] += it["affected"]; e["has_affected"] = True
         sdp_issues_list = sorted(
-            [{"social_issue": k, "n": v["n"], "affected": (v["affected"] if v["has_affected"] else None)} for k, v in sdp_issues_agg.items()],
+            [{"social_issue": k, "n": v["n"], "affected": (v["affected"] if v["has_affected"] else None), "n_vo": v["n_vo"] or None} for k, v in sdp_issues_agg.items()],
             key=lambda r: -r["n"])[:30]
 
         departments_agg = {}
@@ -481,12 +499,20 @@ def aggregate_group(CLFS, name, clf_ranking_mode="full"):
         vprp_years_agg[yr_key] = {
             "n_demands": total_requesting,
             "pct_nrega_accessed": round(accessed_est / total_requesting * 100, 1) if total_requesting else None,
-            "n_other_schemes": len(other_schemes),
+            "n_other_schemes": len(other_schemes), "n_schemes_total": n_schemes_total,
+            "n_vo_requesting_ent": n_vo_requesting_ent or None,
             "by_scheme": by_scheme_agg, "state_scheme_breakdown": state_breakdown,
             "n_pgsrd": n_pgsrd_total, "pgsrd_type_split": pgsrd_type_split_agg,
+            "n_vo_requesting_pgsrd": n_vo_requesting_pgsrd or None,
             "pgsrd_items": pgsrd_items_list, "sdg_theme": sdg_theme_agg or None, "gpdp_area": gpdp_area_agg or None,
-            "n_sdp": n_sdp_total, "sdp_sector": sdp_sector_agg,
+            "n_sdp": n_sdp_total, "sdp_sector": sdp_sector_agg, "n_vo": n_vo_sdp or None,
             "sdp_issues": sdp_issues_list, "departments": departments_agg or None,
+            # departments_agg is a union of each CLF's own top-6 departments, not
+            # every CLF's full list (only n_departments, not the full breakdown,
+            # is stored per-CLF) - in practice the department vocabulary is a
+            # small fixed set of ~10-20 named entities, so a union across dozens
+            # of CLFs per district reliably captures the true distinct count.
+            "n_departments": len(departments_agg) or None,
         }
 
     # ---- Scoring: Overall = avg of each CLF's own Overall Score (equal

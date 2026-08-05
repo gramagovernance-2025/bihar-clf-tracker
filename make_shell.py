@@ -1143,9 +1143,10 @@ function emptyYearNote(domainKey){
 function renderVprpEnt(){
   const y = currentVprpYearData();
   if(!y || !y.n_demands) return emptyYearNote('vprp_ent');
+  const showGp = CURRENT_VIEW === 'clf'; // GP breakdown only makes sense at CLF granularity
   const accessedNote = vprpYear===2025 ? ` — this year is recent, so accessed status may not be fully updated yet` : '';
   const schemeRows = (y.by_scheme||[]).map(s=>{
-    const tds = `<td>${s.scheme}</td><td class="num">${fmtNum(s.demanded)}</td><td class="num">${fmtNum(s.n_vo)}</td><td>${vprpGpNamesCell(s.gp_names)}</td>`;
+    const tds = `<td>${s.scheme}</td><td class="num">${fmtNum(s.demanded)}</td><td class="num">${fmtNum(s.n_vo)}</td>${showGp?`<td>${vprpGpNamesCell(s.gp_names)}</td>`:''}`;
     let extra = '';
     if(s.raw_scheme==='state-specific' && y.state_scheme_breakdown){
       // Sibling <tr>s in the SAME table (not a nested <table> in a merged
@@ -1153,7 +1154,7 @@ function renderVprpEnt(){
       // nested table lays its own columns out independently and doesn't
       // know where "Demanded" sits in the outer table.
       extra = Object.entries(y.state_scheme_breakdown).map(([k,v])=>
-        `<tr><td style="padding-left:28px;color:var(--ink-soft);">${k}</td><td class="num">${fmtNum(v.demanded)}</td><td class="num">${fmtNum(v.n_vo)}</td><td>${vprpGpNamesCell(v.gp_names)}</td></tr>`).join('');
+        `<tr><td style="padding-left:28px;color:var(--ink-soft);">${k}</td><td class="num">${fmtNum(v.demanded)}</td><td class="num">${fmtNum(v.n_vo)}</td>${showGp?`<td>${vprpGpNamesCell(v.gp_names)}</td>`:''}</tr>`).join('');
     }
     return `<tr>${tds}</tr>${extra}`;
   }).join('');
@@ -1165,19 +1166,26 @@ function renderVprpEnt(){
         ${tile('Number of Schemes Requested', fmtNum(y.n_schemes_total), 'distinct scheme types, incl. NREGA')}
       </div>
       ${y.by_scheme ? `<p class="hint tip" style="margin-bottom:8px;" data-tip="${TIPS['Demand & Access by Scheme']}"><b>Demand by Scheme</b>${accessedNote}</p>
-        <div class="table-wrap"><table><thead><tr><th>Scheme</th><th class="num">Demanded</th><th class="num">VOs</th><th>GPs</th></tr></thead><tbody>${schemeRows}</tbody></table></div>` : ''}
+        <div class="table-wrap"><table><thead><tr><th>Scheme</th><th class="num">Demanded</th><th class="num">VOs</th>${showGp?'<th>GPs</th>':''}</tr></thead><tbody>${schemeRows}</tbody></table></div>` : ''}
     </div></section>`;
 }
 function renderVprpPgsrd(){
   const y = currentVprpYearData();
   if(!y || !y.n_pgsrd) return emptyYearNote('vprp_pgsrd');
-  const items = (y.pgsrd_items||[]).map(it=>[it.item_demanded, it.pgsrd_type, fmtNum(it.n), fmtNum(Math.round(it.units)), fmtNum(it.n_vo), vprpGpNamesCell(it.gp_names)]);
+  const showGp = CURRENT_VIEW === 'clf';
+  const items = (y.pgsrd_items||[]).map(it=>{
+    const row = [it.item_demanded, it.pgsrd_type, fmtNum(it.n), fmtNum(Math.round(it.units)), fmtNum(it.n_vo)];
+    if(showGp) row.push(vprpGpNamesCell(it.gp_names));
+    return row;
+  });
+  const itemCols = [{label:'Item'},{label:'Type'},{label:'# Requests',num:true},{label:'Total Units',num:true},{label:'VOs',num:true}];
+  if(showGp) itemCols.push({label:'GPs'});
   const typeDonut = y.pgsrd_type_split ? donutBlock('ring-pgsrd-type', y.pgsrd_type_split, PGSRD_COLORS, {size:150, fmt:v=>v+'%'}) : null;
   return `<section><div class="section-head"><h2 class="serif">Public Goods, Services, and Resource Development</h2></div>
     <div class="panel">
       <div class="tiles n2" style="margin-bottom:16px;">${tile('Total PGSRD Requests', fmtNum(y.n_pgsrd))}${tile('Number of VOs Requesting', fmtNum(y.n_vo_requesting_pgsrd))}</div>
       ${typeDonut?`<p class="hint tip" data-tip="${TIPS['Type of Request']}"><b>Type of Request</b></p>${typeDonut.html}`:''}
-      ${items.length?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Most-Requested Items']}"><b>Most-Requested Items</b></p>${tableHtml([{label:'Item'},{label:'Type'},{label:'# Requests',num:true},{label:'Total Units',num:true},{label:'VOs',num:true},{label:'GPs'}], items)}`:''}
+      ${items.length?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Most-Requested Items']}"><b>Most-Requested Items</b></p>${tableHtml(itemCols, items)}`:''}
       ${y.sdg_theme?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['By Development Theme']}"><b>By Development Theme</b></p><div class="pills" style="margin-bottom:8px;">${Object.entries(y.sdg_theme).map(([k,v])=>`<span class="pill on">${k} (${fmtNum(v)})</span>`).join('')}</div>`:''}
       ${y.gpdp_area?`<p class="hint tip" style="margin-top:14px;" data-tip="${TIPS['By GPDP Focus Area']}"><b>By GPDP Focus Area</b></p><div class="pills">${Object.entries(y.gpdp_area).map(([k,v])=>`<span class="pill on">${k} (${fmtNum(v)})</span>`).join('')}</div>`:''}
     </div></section>`;
@@ -1185,7 +1193,14 @@ function renderVprpPgsrd(){
 function renderVprpSdp(){
   const y = currentVprpYearData();
   if(!y || !y.n_sdp) return emptyYearNote('vprp_sdp');
-  const issues = (y.sdp_issues||[]).map(it=>[it.social_issue, fmtNum(it.n), it.affected!==null?fmtNum(it.affected):'not reported', fmtNum(it.n_vo), vprpGpNamesCell(it.gp_names)]);
+  const showGp = CURRENT_VIEW === 'clf';
+  const issues = (y.sdp_issues||[]).map(it=>{
+    const row = [it.social_issue, fmtNum(it.n), it.affected!==null?fmtNum(it.affected):'not reported', fmtNum(it.n_vo)];
+    if(showGp) row.push(vprpGpNamesCell(it.gp_names));
+    return row;
+  });
+  const issueCols = [{label:'Issue'},{label:'# Occurrences',num:true},{label:'People Affected',num:true},{label:'VOs',num:true}];
+  if(showGp) issueCols.push({label:'GPs'});
   const sectorDonut = y.sdp_sector ? donutBlock('ring-sdp-sector', y.sdp_sector, SDP_COLORS, {size:150, fmt:v=>v+'%'}) : null;
   return `<section><div class="section-head"><h2 class="serif">Social Development Plan</h2></div>
     <div class="panel">
@@ -1195,7 +1210,7 @@ function renderVprpSdp(){
         ${tile('Government Departments Involved', fmtNum(y.n_departments))}
       </div>
       ${sectorDonut?`<p class="hint tip" data-tip="${TIPS['By Sector']}"><b>By Sector</b></p>${sectorDonut.html}`:''}
-      ${issues.length?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Most-Raised Issues']}"><b>Most-Raised Issues</b></p>${tableHtml([{label:'Issue'},{label:'# Occurrences',num:true},{label:'People Affected',num:true},{label:'VOs',num:true},{label:'GPs'}], issues)}`:''}
+      ${issues.length?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Most-Raised Issues']}"><b>Most-Raised Issues</b></p>${tableHtml(issueCols, issues)}`:''}
       ${y.departments?`<p class="hint tip" style="margin-top:18px;" data-tip="${TIPS['Government Departments Involved']}"><b>Government Departments Involved</b></p><div class="pills">${Object.entries(y.departments).map(([k,v])=>`<span class="pill on">${k} (${fmtNum(v)})</span>`).join('')}</div>`:''}
     </div></section>`;
 }
