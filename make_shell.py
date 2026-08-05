@@ -1758,11 +1758,15 @@ function flattenedRankings(){
 }
 function renderGroupScoringRankings(){
   const mode = GROUP_DATA.scoring.clf_ranking_mode;
-  const title = mode==='top_bottom_20' ? 'Top &amp; Bottom 20 CLFs' : 'CLF Performance';
-  const hint = mode==='top_bottom_20'
-    ? `top 20 and bottom 20 of all ${fmtNum(GROUP_DATA.scoring.n_total)} CLFs in Bihar &middot; click a column to sort &middot; click a CLF or District to open its tracker`
-    : `all ${GROUP_DATA.scoring.clf_rankings.length} CLFs in ${GROUP_DATA.name} district &middot; click a column to sort &middot; click a CLF to open its tracker`;
-  return `<section><div class="section-head"><h2 class="serif">${title}</h2><span class="hint">${hint}</span></div>
+  if(mode==='top_bottom_20'){
+    const commonHint = `of all ${fmtNum(GROUP_DATA.scoring.n_total)} CLFs in Bihar &middot; click a column to sort &middot; click a CLF or District to open its tracker`;
+    return `<section><div class="section-head"><h2 class="serif">Top 20 CLFs</h2><span class="hint">highest overall score ${commonHint}</span></div>
+      <div class="panel"><div id="clf-rankings-top-container"></div></div></section>
+    <section><div class="section-head"><h2 class="serif">Bottom 20 CLFs</h2><span class="hint">lowest overall score ${commonHint}</span></div>
+      <div class="panel"><div id="clf-rankings-bottom-container"></div></div></section>`;
+  }
+  const hint = `all ${GROUP_DATA.scoring.clf_rankings.length} CLFs in ${GROUP_DATA.name} district &middot; click a column to sort &middot; click a CLF to open its tracker`;
+  return `<section><div class="section-head"><h2 class="serif">CLF Performance</h2><span class="hint">${hint}</span></div>
     <div class="panel"><div id="clf-rankings-container"></div></div></section>`;
 }
 // ---- District Performance: same 9-column shape as CLF Rankings, one level
@@ -1802,7 +1806,16 @@ function renderGroupScoring(sub){
     : sub==='rankings' ? renderGroupScoringRankings()
     : renderGroupScoringDistrictRankings();
   document.getElementById('panel-scoring').innerHTML = contextBox('scoring') + body;
-  if(sub==='rankings'){ makeSortableTable('clf-rankings-container', CLF_RANK_COLS(), flattenedRankings(), clfRankRow); }
+  if(sub==='rankings'){
+    const mode = GROUP_DATA.scoring.clf_ranking_mode;
+    if(mode==='top_bottom_20'){
+      const all = flattenedRankings();
+      makeSortableTable('clf-rankings-top-container', CLF_RANK_COLS(), all.filter(r=>r.tier==='top'), clfRankRow);
+      makeSortableTable('clf-rankings-bottom-container', CLF_RANK_COLS(), all.filter(r=>r.tier==='bottom'), clfRankRow);
+    } else {
+      makeSortableTable('clf-rankings-container', CLF_RANK_COLS(), flattenedRankings(), clfRankRow);
+    }
+  }
   if(sub==='districtrankings'){ makeSortableTable('district-rankings-container', DISTRICT_RANK_COLS(), flattenedDistrictRankings(), districtRankRow); }
 }
 """
