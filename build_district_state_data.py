@@ -32,15 +32,29 @@ import glob
 import re
 import os
 import time
+from datetime import datetime
+
+from build_loan_tab_data import xirr, LENDING_FUND_HEADINGS
 
 BASE = "/Users/mohanrajagopal/Dropbox/Bihar Gates Team/3_Jeevika/6_LokOS_Analysis"
 DATA_DIR = f"{BASE}/3_Output/CLF Tracker/Scale-Up/data"
 os.makedirs(f"{DATA_DIR}/districts", exist_ok=True)
 
+LENDING_HEADINGS_SET = set(LENDING_FUND_HEADINGS.values())
+
+def _parse_iso(s):
+    return datetime.strptime(s, "%Y-%m-%d").date()
+
+def _lending_corpus(c):
+    """Sum of CIF/CEF/PMFME total_received for one CLF's fund_disbursement block - same 3
+    headings build_loan_tab_data.py sums for its own Active Lending Turnover denominator."""
+    headings = c.get("fund_disbursement", {}).get("headings", [])
+    return sum(h["total_received"] for h in headings if h["heading"] in LENDING_HEADINGS_SET)
+
 T0 = time.time()
 def elapsed(): return f"{time.time()-T0:.1f}s"
 
-CATS = ["Fund Utilization & Loan Activity", "Financial Health", "VRF Fund Health", "Governance & Compliance", "Welfare and Livelihood"]
+CATS = ["Financial Health", "Fund Utilization", "Loan Portfolio", "VRF Fund Health", "Governance & Compliance", "Welfare and Livelihood", "Data Coverage"]
 
 def slugify(name):
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
@@ -338,6 +352,104 @@ def aggregate_group(CLFS, name, clf_ranking_mode="full"):
         "f01": f01_agg, "quarters": quarterly_agg,
     }
 
+    # ---- Fund Disbursement (statewide-complete, 38/38 districts - independent of
+    # Loans' partial coverage, same reasoning build_loan_tab_data.py's own
+    # independent injection pass uses). Per-heading sum of total_received/n_batches,
+    # max of latest_receipt_date, across every CLF in the group that has it. ----
+    fd_found = [c for c in CLFS if c.get("fund_disbursement", {}).get("found")]
+    heading_agg = {}
+    for c in fd_found:
+        for h in c["fund_disbursement"]["headings"]:
+            key = h["heading"]
+            if key not in heading_agg:
+                heading_agg[key] = {"heading": key, "total_received": 0.0, "n_batches": 0, "latest_receipt_date": None}
+            heading_agg[key]["total_received"] += h["total_received"]
+            heading_agg[key]["n_batches"] += h["n_batches"]
+            if h["latest_receipt_date"] and (heading_agg[key]["latest_receipt_date"] is None or h["latest_receipt_date"] > heading_agg[key]["latest_receipt_date"]):
+                heading_agg[key]["latest_receipt_date"] = h["latest_receipt_date"]
+    fund_disbursement_agg = {
+        "found": len(fd_found) > 0,
+        "headings": sorted(heading_agg.values(), key=lambda h: -h["total_received"]),
+    }
+
+    # ---- Loans: Portfolio Overview only - the full "All Loans" table and the
+    # per-loan Loan Schedule subtab don't generalize to group scope (same
+    # reasoning as VRF's VO-Level Breakdown being CLF-only), so neither is
+    # aggregated here. KPI rates are recomputed from summed totals, not
+    # averaged CLF-by-CLF (same convention as Financial above). Total XIRR is
+    # re-solved from every matched CLF's own pooled cash-flow series
+    # (xirr_cashflows, added to the CLF json for exactly this purpose) rather
+    # than averaged - averaging per-CLF XIRR percentages isn't mathematically
+    # valid the way pooling the underlying flows and re-solving xirr() is. ----
+    loan_found = [c for c in CLFS if c.get("loans", {}).get("found")]
+    total_disbursed_l = sum(c["loans"]["kpi"]["total_disbursed"] for c in loan_found)
+    total_outstanding_l = sum(c["loans"]["kpi"]["total_outstanding"] for c in loan_found)
+
+    fund_source_mix_l, loan_type_mix_l, loan_status_mix_l = {}, {}, {}
+    for c in loan_found:
+        for k, v in c["loans"]["fund_source_mix"].items():
+            fund_source_mix_l[k] = fund_source_mix_l.get(k, 0) + v
+        for k, v in c["loans"]["loan_type_mix"].items():
+            loan_type_mix_l[k] = loan_type_mix_l.get(k, 0) + v
+        for k, v in c["loans"]["loan_status_mix"].items():
+            loan_status_mix_l[k] = loan_status_mix_l.get(k, 0) + v
+
+    hist_by_bucket = {}
+    for c in loan_found:
+        for row in c["loans"]["vo_loan_histogram"]:
+            hist_by_bucket[row["n_loans"]] = hist_by_bucket.get(row["n_loans"], 0) + row["n_vo"]
+    hist_total_vo = sum(hist_by_bucket.values())
+    vo_loan_histogram_l = [
+        {"n_loans": k, "n_vo": v, "pct": round(100 * v / hist_total_vo, 1) if hist_total_vo else None}
+        for k, v in sorted(hist_by_bucket.items(), key=lambda kv: (kv[0] == "5+", kv[0]))
+    ]
+
+    total_current_demand_l = sum(c["loans"]["kpi"].get("total_current_demand") or 0 for c in loan_found)
+    corpus_l = sum(_lending_corpus(c) for c in loan_found)
+    pooled_cashflows = []
+    for c in loan_found:
+        for d_iso, amt in c["loans"].get("xirr_cashflows", []):
+            pooled_cashflows.append((_parse_iso(d_iso), amt))
+    total_xirr_l = xirr(pooled_cashflows) if pooled_cashflows else None
+
+    loans_agg = {
+        "found": len(loan_found) > 0, "n_clfs_with_loans": len(loan_found), "n_total": n_clfs,
+        "kpi": {
+            "n_active_loans": sum(c["loans"]["kpi"]["n_active_loans"] for c in loan_found),
+            "total_disbursed": total_disbursed_l,
+            "total_outstanding": total_outstanding_l,
+            "repayment_rate": round(100 * (total_disbursed_l - total_outstanding_l) / total_disbursed_l, 1) if total_disbursed_l else None,
+            "n_vo_never_borrowed": sum(c["loans"]["kpi"]["n_vo_never_borrowed"] for c in loan_found),
+            "active_lending_turnover": round(total_disbursed_l / corpus_l, 3) if corpus_l else None,
+            "n_loans_in_arrears": sum(c["loans"]["kpi"]["n_loans_in_arrears"] for c in loan_found),
+            "total_arrears": sum(c["loans"]["kpi"]["total_arrears"] for c in loan_found),
+            "total_current_demand": total_current_demand_l,
+            "total_xirr": total_xirr_l,
+        },
+        "fund_source_mix": fund_source_mix_l,
+        "loan_type_mix": loan_type_mix_l,
+        "loan_status_mix": loan_status_mix_l,
+        "vo_loan_histogram": vo_loan_histogram_l,
+    }
+
+    # ---- Data Availability: per-source coverage counts across every CLF in the
+    # group - informational only, same reasoning as the CLF-level block this
+    # rolls up (build_loan_scoring_data.py). Preserves each CLF's own source
+    # order/labels (identical across all CLFs) rather than re-deriving it. ----
+    da_source_order = CLFS[0]["data_availability"]["sources"] if CLFS and "data_availability" in CLFS[0] else []
+    da_flags_by_clf = [
+        {s["key"]: s["available"] for s in c.get("data_availability", {}).get("sources", [])}
+        for c in CLFS
+    ]
+    data_availability_agg = {
+        "sources": [
+            {"key": s["key"], "label": s["label"],
+             "n_available": sum(1 for flags in da_flags_by_clf if flags.get(s["key"])),
+             "n_total": n_clfs}
+            for s in da_source_order
+        ],
+    }
+
     # ---- VRF: KPI Snapshot + Forecasts only (VO/Bookkeeper-grain tabs, and
     # their district-level replacements, were dropped entirely per explicit
     # instruction). Forecasts are the elementwise sum of each CLF's own
@@ -593,10 +705,19 @@ def aggregate_group(CLFS, name, clf_ranking_mode="full"):
     # & Registered"). Empty descriptor means the format code is already
     # self-explanatory (e.g. "2.2 of 6" for Subcommittee Completeness).
     METRIC_RAW = {
-        ("Fund Utilization & Loan Activity", "Fund Deployment"): (f01_agg["deployment_ratio"], "pct", "fund deployment ratio"),
-        ("Fund Utilization & Loan Activity", "Interest Income Share"): (latest_q_fin["interest_income_share"] if latest_q_fin else None, "pct", "of receipts"),
-        ("Fund Utilization & Loan Activity", "This Quarter's Disbursement Rate"): (latest_q_fin["this_qtr_disb_rate"] if latest_q_fin else None, "pct", "of loan demand disbursed"),
-        ("Fund Utilization & Loan Activity", "Loan Amount Demanded This Quarter"): (demand_per_member, "rs_per_member", ""),
+        ("Fund Utilization", "Fund Deployment"): (f01_agg["deployment_ratio"], "pct", "fund deployment ratio"),
+        ("Fund Utilization", "Interest Income Share"): (latest_q_fin["interest_income_share"] if latest_q_fin else None, "pct", "of receipts"),
+        ("Fund Utilization", "This Quarter's Disbursement Rate"): (latest_q_fin["this_qtr_disb_rate"] if latest_q_fin else None, "pct", "of loan demand disbursed"),
+        ("Fund Utilization", "Loan Amount Demanded This Quarter"): (demand_per_member, "rs_per_member", ""),
+        ("Loan Portfolio", "Repayment Rate"): (loans_agg["kpi"]["repayment_rate"], "pct", "repaid of disbursed"),
+        ("Loan Portfolio", "Active Lending Turnover"): (loans_agg["kpi"]["active_lending_turnover"], "multiplier", "of corpus recycled"),
+        ("Loan Portfolio", "Arrears Rate"): (
+            round(100 * loans_agg["kpi"]["total_arrears"] / total_current_demand_l, 1) if total_current_demand_l else None,
+            "pct", "of current demand overdue"),
+        ("Loan Portfolio", "Total XIRR"): (loans_agg["kpi"]["total_xirr"], "pct_signed", "annualized"),
+        ("Data Coverage", "Data Sources Available"): (
+            (sum(c["data_availability"]["n_available"] for c in CLFS) / n_clfs) if n_clfs else None,
+            "of_11", ""),
         ("Financial Health", "Surplus / Deficit"): (f01_agg["surplus_pct"], "pct_signed", "of assets"),
         ("Financial Health", "Net Cash Flow"): (latest_q_fin["net_cash_flow"] if latest_q_fin else None, "rs", ""),
         ("Financial Health", "Bookkeeping Accuracy"): (bookkeeping_accuracy, "pct", "accuracy"),
@@ -665,11 +786,16 @@ def aggregate_group(CLFS, name, clf_ranking_mode="full"):
         "category_ranks": {cat: {"rank": None, "n": None} for cat in CATS},
     }
 
-    pseudo_clf = {"financial": financial_agg, "vrf": vrf_agg, "vprp": {"years": vprp_years_agg}}
+    pseudo_clf = {
+        "financial": financial_agg, "vrf": vrf_agg, "vprp": {"years": vprp_years_agg},
+        "loans": loans_agg, "fund_disbursement": fund_disbursement_agg,
+    }
 
     return {
         "name": name, "overview": overview_agg, "audit": audit_agg,
         "financial": financial_agg, "vrf": vrf_agg, "vprp": {"years": vprp_years_agg},
+        "loans": loans_agg, "fund_disbursement": fund_disbursement_agg,
+        "data_availability": data_availability_agg,
         "scoring": scoring_agg, "pseudo_clf": pseudo_clf,
     }
 
@@ -778,10 +904,11 @@ print(f"[{elapsed()}] Wrote state.json.")
 DISTRICT_CONTEXT = {
     "overview": "A snapshot of the district's CLFs, aggregated across all of them. <b>Profile</b> covers CLF status distribution and district-wide governance structure (Executive Committee totals, subcommittee membership, summed across CLFs). <b>Members</b> covers social inclusion and welfare coverage, education levels, livelihood diversification, special project activities, and the district's cadre roster - all summed or member-weighted-averaged across every CLF in the district.",
     "audit": "The district's most recent audit results (FY 2025-26, Q4), averaged across every CLF with an audit on file: average grade and score, how this district compares statewide, a breakdown across the 6 scoring categories, the individual line items behind each category, how many CLFs were flagged for a financial irregularity (and what kind), and a cash book vs. physical cash reconciliation check.",
-    "financial": "The district's balance sheet, quarterly cash flow, and credit disbursement, summed across every CLF for a selected quarter, with every ratio recomputed from those summed totals (not averaged CLF-by-CLF). <b>Summary</b> gives key ratios (liquidity, fund deployment, surplus/deficit, books balance check) and a breakdown of where capital and cash came from and went to. <b>Statements</b> shows the full balance sheet and receipts &amp; payments statement, summed line-by-line across every CLF.",
+    "financial": "The district's balance sheet, quarterly cash flow, and credit disbursement, summed across every CLF for a selected quarter, with every ratio recomputed from those summed totals (not averaged CLF-by-CLF). <b>Summary</b> gives key ratios (liquidity, fund deployment, surplus/deficit, books balance check) and a breakdown of where capital and cash came from and went to. <b>Statements</b> shows the full balance sheet and receipts &amp; payments statement, summed line-by-line across every CLF. <b>Fund Disbursement</b> shows lifetime capital received from the state under every fund heading, summed across every CLF in the district.",
+    "loans": "Tracks loans disbursed to member VOs, summed across every CLF in the district with loan data. <b>Portfolio Overview</b> gives district-wide totals, repayment/return metrics recomputed from those totals (not averaged CLF-by-CLF), and portfolio composition. The per-loan Loan Schedule and full loan listing don't generalize to district scope and stay CLF-only.",
     "vrf": "Tracks the district's Vulnerability Reduction Fund, rolled up from every VO across every CLF in the district. <b>KPI Snapshot</b> gives district-wide totals and fund health. <b>Forecasts</b> projects where the fund is headed by 31 March 2027 under three lending-activity scenarios, summed across every CLF's own forecast.",
     "vprp": "Requests and plans raised through VPRP, by year (2023-2025), summed across every CLF in the district. <b>Entitlements</b> tracks government scheme demands (ration cards, pensions, insurance, etc.) and NREGA job card access. <b>PGSRD</b> (Public Goods, Services, and Resource Development) tracks requests for public infrastructure, resources, and services. <b>SDP</b> (Social Development Plan) tracks broader social issues raised and the government departments involved.",
-    "scoring": "Combines every other tab into one performance score for the district, against Bihar statewide. <b>Overall</b> gives the district's average Overall Score (equal weight per CLF) plus a category breakdown. <b>By Category</b> shows every individual metric behind the 5 categories, averaged across the district's own CLFs. <b>CLF Rankings</b> lists every CLF in the district side by side, ranked by Overall Score.",
+    "scoring": "Combines every other tab into one performance score for the district, against Bihar statewide. <b>Overall</b> gives the district's average Overall Score (equal weight per CLF) plus a category breakdown. <b>By Category</b> shows every individual metric behind all 7 categories, averaged across the district's own CLFs. <b>CLF Rankings</b> lists every CLF in the district side by side, ranked by Overall Score.",
 }
 DISTRICT_ERR_MSG_TMPL = {
     "audit_scores": "We could not locate Audit Scores for any CLF in {name} district.",
@@ -793,15 +920,18 @@ DISTRICT_ERR_MSG_TMPL = {
     "vprp_ent": "We could not locate Entitlements data for {name} district in {year}.",
     "vprp_pgsrd": "We could not locate PGSRD data for {name} district in {year}.",
     "vprp_sdp": "We could not locate SDP data for {name} district in {year}.",
+    "loans": "We could not locate Loan data for any CLF in {name} district. The Loans tab currently covers 15 districts, as the statewide CLF-meeting loan scrape is still in progress.",
+    "fund_disbursement": "We could not locate Fund Disbursement data for any CLF in {name} district.",
     "not_found": "Not Found",
 }
 STATE_CONTEXT = {
     "overview": "A snapshot of every CLF in Bihar, aggregated statewide. <b>Profile</b> covers CLF status distribution and statewide governance structure (Executive Committee totals, subcommittee membership, summed across every CLF). <b>Members</b> covers social inclusion and welfare coverage, education levels, livelihood diversification, special project activities, and the statewide cadre roster.",
     "audit": "The most recent audit results statewide (FY 2025-26, Q4), averaged across every CLF with an audit on file: average grade and score, a breakdown across the 6 scoring categories, the individual line items behind each category, how many CLFs were flagged for a financial irregularity (and what kind), and a cash book vs. physical cash reconciliation check.",
-    "financial": "The balance sheet, quarterly cash flow, and credit disbursement of every CLF in Bihar, summed for a selected quarter, with every ratio recomputed from those summed totals (not averaged CLF-by-CLF). <b>Summary</b> gives key ratios and a breakdown of where capital and cash came from and went to. <b>Statements</b> shows the full balance sheet and receipts &amp; payments statement, summed line-by-line across every CLF statewide.",
+    "financial": "The balance sheet, quarterly cash flow, and credit disbursement of every CLF in Bihar, summed for a selected quarter, with every ratio recomputed from those summed totals (not averaged CLF-by-CLF). <b>Summary</b> gives key ratios and a breakdown of where capital and cash came from and went to. <b>Statements</b> shows the full balance sheet and receipts &amp; payments statement, summed line-by-line across every CLF statewide. <b>Fund Disbursement</b> shows lifetime capital received from the state under every fund heading, summed across every CLF in Bihar.",
+    "loans": "Tracks loans disbursed to member VOs, summed across every CLF statewide with loan data. <b>Portfolio Overview</b> gives statewide totals, repayment/return metrics recomputed from those totals (not averaged CLF-by-CLF), and portfolio composition. The per-loan Loan Schedule and full loan listing don't generalize to statewide scope and stay CLF-only.",
     "vrf": "Tracks Bihar's Vulnerability Reduction Fund, rolled up from every VO across every CLF in the state. <b>KPI Snapshot</b> gives statewide totals and fund health. <b>Forecasts</b> projects where the fund is headed by 31 March 2027 under three lending-activity scenarios, summed across every CLF's own forecast.",
     "vprp": "Requests and plans raised through VPRP, by year (2023-2025), summed across every CLF in Bihar. <b>Entitlements</b> tracks government scheme demands and NREGA job card access. <b>PGSRD</b> tracks requests for public infrastructure, resources, and services. <b>SDP</b> tracks broader social issues raised and the government departments involved.",
-    "scoring": "Combines every other tab into one statewide performance score. <b>Overall</b> gives the average Overall Score across every CLF in Bihar (equal weight per CLF) plus a category breakdown. <b>By Category</b> shows every individual metric behind the 5 categories, averaged statewide. <b>CLF Rankings</b> shows the top 20 and bottom 20 CLFs in Bihar by Overall Score.",
+    "scoring": "Combines every other tab into one statewide performance score. <b>Overall</b> gives the average Overall Score across every CLF in Bihar (equal weight per CLF) plus a category breakdown. <b>By Category</b> shows every individual metric behind all 7 categories, averaged statewide. <b>CLF Rankings</b> shows the top 20 and bottom 20 CLFs in Bihar by Overall Score.",
 }
 STATE_ERR_MSG = {
     "audit_scores": "We could not locate Audit Scores for any CLF statewide.",
@@ -813,6 +943,8 @@ STATE_ERR_MSG = {
     "vprp_ent": "We could not locate Entitlements data statewide in {year}.",
     "vprp_pgsrd": "We could not locate PGSRD data statewide in {year}.",
     "vprp_sdp": "We could not locate SDP data statewide in {year}.",
+    "loans": "We could not locate Loan data statewide. The Loans tab currently covers 15 districts, as the statewide CLF-meeting loan scrape is still in progress.",
+    "fund_disbursement": "We could not locate Fund Disbursement data statewide.",
     "not_found": "Not Found",
 }
 

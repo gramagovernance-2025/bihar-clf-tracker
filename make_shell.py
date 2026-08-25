@@ -202,6 +202,11 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
 .pills{ display:flex; flex-wrap:wrap; gap:7px; }
 .pill{ font-size:12.5px; padding:5px 12px; border-radius:999px; background:var(--panel-alt); border:1px solid var(--line-strong); color:var(--ink-soft); }
 .pill.on{ background:var(--primary); border-color:var(--primary); color:#fff; font-weight:600; }
+.pill-sm{ font-size:11.5px; padding:3px 10px; border-radius:999px; border:1px solid var(--line-strong); background:var(--panel-alt); color:var(--ink-soft); white-space:nowrap; }
+.pill-sm.status-active{ background:var(--primary-soft); border-color:var(--primary); color:#1f6b4d; font-weight:600; }
+.pill-sm.status-closed{ background:var(--grey-soft); border-color:var(--grey); color:var(--ink-soft); font-weight:600; }
+.pill-sm.status-none{ background:var(--gold-soft); border-color:var(--gold); color:#8a6a1f; font-weight:600; }
+.pill-sm.status-negative{ background:var(--low-soft); border-color:var(--low); color:#8a3226; font-weight:600; }
 .selectbar{ display:flex; align-items:center; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
 .selectbar label{ font-size:12.5px; font-weight:600; color:var(--ink-soft); }
 .selectbar select{ min-height:40px; font-family:inherit; font-size:14px; color:var(--ink); background:var(--panel); border:1px solid var(--line-strong); border-radius:8px; padding:8px 12px; }
@@ -230,6 +235,8 @@ tr.low .score-bar .fill{ background:var(--low); } tr.low .score-num{ color:var(-
 
 /* Shared highlighted-callout style for the "needs attention" / "bottom-half" sentences */
 .callout-attn{ text-align:center; font-weight:700; margin:14px 0 0; padding:11px 16px; background:var(--low-soft); color:#8a3226; border-radius:8px; }
+.callout-good{ text-align:center; font-weight:700; margin:14px 0 0; padding:11px 16px; background:var(--primary-soft); color:#1f6b4d; border-radius:8px; }
+.avg-row td{ font-style:italic; border-bottom:2px solid var(--ink-soft); }
 
 /* Forecast table + line charts (ported from the VRF tracker) */
 .forecast-table td, .forecast-table th{ padding:12px 10px; }
@@ -482,10 +489,16 @@ function tableHtml(cols, rows){
 // e.g. a composite chip column). Re-sorts the underlying data array itself
 // (not just the rendered strings), so numeric columns sort numerically
 // rather than as text, then rebuilds display rows via rowBuilder(item).
-function makeSortableTable(containerId, cols, data, rowBuilder, tip){
+function makeSortableTable(containerId, cols, data, rowBuilder, tip, extraRow){
+  // extraRow (e.g. the State Average benchmark row) is a raw data object,
+  // shaped identically to a normal `data` row - it's merged into the sortable
+  // pool and sorts naturally by whichever column is clicked (so you can see
+  // where it lands relative to real rows), just rendered with a distinguishing
+  // class (avg-row) rather than pinned to a fixed position.
   const state = { col: null, dir: 1 };
   function draw(){
-    const sorted = state.col === null ? data : data.slice().sort((a, b) => {
+    const fullData = extraRow ? [...data, extraRow] : data;
+    const sorted = state.col === null ? fullData : fullData.slice().sort((a, b) => {
       let av = a[cols[state.col].key], bv = b[cols[state.col].key];
       if(typeof av === 'string'){ av = av.toUpperCase(); bv = bv.toUpperCase(); }
       if(av == null) return 1; if(bv == null) return -1;
@@ -493,14 +506,17 @@ function makeSortableTable(containerId, cols, data, rowBuilder, tip){
       if(av > bv) return 1 * state.dir;
       return 0;
     });
-    const rows = sorted.map(rowBuilder);
     const theadHtml = `<tr>${cols.map((c,i)=>{
       const t = c.tip || tip || TIPS[c.label];
       const cls = [c.num?'num':'', t?'th-tip':'', c.key?'sortable':''].filter(Boolean).join(' ');
       const arrow = c.key ? ` <span class="sort-arrow${state.col===i?' active':''}">${state.col===i?(state.dir===1?'▲':'▼'):'⇅'}</span>` : '';
       return `<th${cls?` class="${cls}"`:''}${t?` data-tip="${t}"`:''}${c.key?` data-colidx="${i}"`:''}>${c.label}${arrow}</th>`;
     }).join('')}</tr>`;
-    const tbodyHtml = rows.map(r=>`<tr>${r.map((v,i)=>`<td${cols[i].num?' class="num"':''}>${v}</td>`).join('')}</tr>`).join('');
+    const tbodyHtml = sorted.map(item=>{
+      const r = rowBuilder(item);
+      const rowCls = item===extraRow ? ' class="avg-row"' : '';
+      return `<tr${rowCls}>${r.map((v,i)=>`<td${cols[i].num?' class="num"':''}>${v}</td>`).join('')}</tr>`;
+    }).join('');
     document.getElementById(containerId).innerHTML = `<div class="table-wrap"><table><thead>${theadHtml}</thead><tbody>${tbodyHtml}</tbody></table></div>`;
     document.querySelectorAll(`#${containerId} th.sortable`).forEach(th=>{
       th.addEventListener('click', ()=>{
@@ -530,7 +546,7 @@ function initTooltips(){
 JS_OVERVIEW = r"""
 function renderOverviewProfile(){
   const o = DATA.overview;
-  const statusCls = !o.status_tier_found ? 'neutral' : (o.status_tier==='Model & Registered' ? '' : (o.status_tier==='Neither' ? 'neg' : 'warn'));
+  const statusCls = !o.status_tier_found ? 'neutral' : (o.status_tier==='Model & Registered' ? '' : (o.status_tier==='Neither Model nor Registered' ? 'neg' : 'warn'));
   const statusVal = o.status_tier_found ? o.status_tier : 'Not Found';
   return `
   <section><div class="section-head"><h2 class="serif">CLF Snapshot</h2></div>
@@ -823,7 +839,54 @@ function renderFinStatements(){
       </div>` : `<p class="disclaimer">${ERR_MSG_JS.receipts_payments}</p>`}
     </div></section>`;
 }
+function FUND_DISBURSEMENT_COLS(){
+  return [
+    {label:'Fund Heading', key:'heading'},
+    {label:'Total Received', num:true, key:'total_received'},
+    {label:'Batches', num:true, key:'n_batches'},
+    {label:'Latest Receipt', key:'latest_receipt_date'},
+  ];
+}
+function fundDisbursementRow(r){
+  return [r.heading, fmtRs(r.total_received), fmtNum(r.n_batches), fmtLoanDate(r.latest_receipt_date)];
+}
+// Not quarter-scoped - this is a lifetime cumulative register of everything the CLF has
+// received under each fund heading, unlike Summary/Statements which are point-in-time or
+// quarterly. Donut collapses everything past the top 5 headings by amount into "Other" so
+// the visual stays legible even for CLFs with a long tail of one-off/rare fund categories -
+// the table below it still lists every heading individually, uncollapsed.
+function renderFinDisbursement(){
+  const fd = DATA.fund_disbursement;
+  if(!fd || !fd.found || !fd.headings.length){
+    return `<section><div class="panel"><p class="disclaimer">${ERR_MSG_JS.fund_disbursement}</p></div></section>`;
+  }
+  return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Fund Disbursement']||''}">Fund Disbursement</h2><span class="hint">lifetime total received, all batches</span></div>
+    <div class="panel">
+      <div style="display:flex;gap:32px;flex-wrap:wrap;align-items:flex-start;justify-content:center;">
+        <div style="flex:2;min-width:320px;"><div id="fund-disbursement-table-container"></div></div>
+        <div style="text-align:center;"><p class="hint" style="margin-bottom:8px;">Composition</p><div id="ring-fund-disbursement-wrap"></div></div>
+      </div>
+    </div></section>`;
+}
 function renderFinancial(sub){
+  if(sub==='disbursement'){
+    document.getElementById('panel-financial').innerHTML = contextBox('financial') + renderFinDisbursement();
+    const fd = DATA.fund_disbursement;
+    if(fd && fd.found && fd.headings.length){
+      makeSortableTable('fund-disbursement-table-container', FUND_DISBURSEMENT_COLS(), fd.headings, fundDisbursementRow);
+      const sorted = fd.headings.slice().sort((a,b)=>b.total_received-a.total_received);
+      const donutData = {};
+      sorted.forEach((h,i)=>{
+        if(i<5) donutData[h.heading] = h.total_received;
+        else donutData['Other'] = (donutData['Other']||0) + h.total_received;
+      });
+      document.getElementById('ring-fund-disbursement-wrap').innerHTML = '';
+      const d = donutBlock('ring-fund-disbursement', donutData, RC_COLORS, {size:170});
+      document.getElementById('ring-fund-disbursement-wrap').innerHTML = d.html;
+      d.draw();
+    }
+    return;
+  }
   const opts = DATA.financial.quarters.map((q,i)=>`<option value="${i}" ${i===finQtrIdx?'selected':''}>${q.label}</option>`).join('');
   const dropdown = `<div class="selectbar"><label for="qtr-select">Quarter:</label><select id="qtr-select">${opts}</select></div>`;
   let summaryDraws = null;
@@ -1226,6 +1289,203 @@ function renderVPRP(sub){
 }
 """
 
+# Loans tab - CLF-level prototype only (not wired into District/State yet).
+# Sourced from clf_loan_tracker.dta (1_Code/clf_loan_cleaning.do), currently
+# Araria district only; every other CLF's json simply has no "loans" key,
+# which renderLoans() treats the same as DATA.loans.found===false.
+JS_LOANS = r"""
+function fmtLoanDate(d){ return d ? new Date(d).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) : '—'; }
+function loanStatusPill(status){
+  const cls = status==='Active' ? 'status-active' : status==='Closed' ? 'status-closed' : 'status-none';
+  return `<span class="pill-sm ${cls}">${status}</span>`;
+}
+function monthStatusPill(status){
+  const cls = status==='Paid' ? 'status-active' : status==='Not Paid' ? 'status-negative' : 'status-none';
+  return `<span class="pill-sm ${cls}">${status}</span>`;
+}
+function LOAN_DETAIL_COLS(){
+  return [
+    {label:'VO Name', key:'vo_name'},
+    {label:'Loan No.', num:true, key:'loan_no'},
+    {label:'Fund Source', key:'fund_source'},
+    {label:'Type', key:'loan_type'},
+    {label:'Amount Disbursed', num:true, key:'loan_amount'},
+    {label:'Current Outstanding', num:true, key:'current_outstanding'},
+    {label:'Repaid to Date', num:true, key:'cumulative_amount_repaid'},
+    {label:'Last Repayment', key:'last_repayment_date'},
+    {label:'Status', key:'status'},
+    {label:'Arrears', num:true, key:'arrears', tip:TIPS['Loans in Arrears']},
+  ];
+}
+function loanDetailRow(r){
+  return [
+    r.vo_name, r.loan_no,
+    r.fund_source ? `<span class="pill-sm">${r.fund_source}</span>` : '—',
+    r.loan_type ? `<span class="pill-sm">${r.loan_type}</span>` : '—',
+    fmtRs(r.loan_amount), fmtRs(r.current_outstanding), fmtRs(r.cumulative_amount_repaid),
+    fmtLoanDate(r.last_repayment_date),
+    loanStatusPill(r.status),
+    r.arrears>0 ? `<span class="pill-sm status-negative">${fmtRs(r.arrears)}</span>` : (r.arrears==null?'—':fmtRs(r.arrears)),
+  ];
+}
+const LOAN_FUND_COLORS = ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)'];
+const LOAN_TYPE_COLORS = ['var(--primary)','var(--gold)'];
+const LOAN_STATUS_COLORS = ['var(--primary)','var(--gold)','var(--grey)'];
+// Same vertical-bar style as drawGradeHistogram, generalised (no fixed grade
+// colour map, X axis is loan-count buckets 0..5+ rather than letter grades).
+function drawVoLoanHistogram(svgId, hist){
+  const svg = document.getElementById(svgId); if(!svg || !hist.length) return;
+  const W=460,H=220,padL=28,padR=20,padT=24,padB=30, innerW=W-padL-padR, innerH=H-padT-padB;
+  const maxPct = Math.max.apply(null, hist.map(h=>h.pct).concat([1]));
+  const slot = innerW/hist.length, barW = Math.min(slot*0.5, 46);
+  let bars='', labels='', valueLabels='';
+  hist.forEach((h,i)=>{
+    const hgt = (h.pct/maxPct)*innerH;
+    const x = padL + i*slot + (slot-barW)/2;
+    const y = padT + innerH - hgt;
+    const n = h.n_loans;
+    bars += `<rect class="tip" data-tip="${n} loan${n===1?'':'s'}: ${fmtNum(h.n_vo)} VOs (${h.pct}%)" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${hgt.toFixed(1)}" fill="${cssVar('--primary')}" rx="3"/>`;
+    valueLabels += `<text x="${(x+barW/2).toFixed(1)}" y="${(y-6).toFixed(1)}" font-size="9" font-weight="700" text-anchor="middle" fill="${cssVar('--ink')}">${h.pct}%</text>`;
+    labels += `<text x="${(x+barW/2).toFixed(1)}" y="${H-10}" font-size="12" font-weight="600" text-anchor="middle" fill="${cssVar('--ink-soft')}">${n}</text>`;
+  });
+  const axis = `<line x1="${padL}" y1="${padT+innerH}" x2="${W-padR}" y2="${padT+innerH}" stroke="${cssVar('--line')}" stroke-width="1"/>`;
+  svg.innerHTML = axis + bars + valueLabels + labels;
+}
+function renderLoansOverview(){
+  const l = DATA.loans;
+  const turnoverCls = l.kpi.active_lending_turnover===0 ? 'neg' : 'neutral';
+  const turnoverVal = l.kpi.active_lending_turnover!=null ? l.kpi.active_lending_turnover.toFixed(2)+'×' : null;
+  const totalXirrVal = l.kpi.total_xirr!=null ? (l.kpi.total_xirr>=0?'+':'')+l.kpi.total_xirr.toFixed(1)+'%' : null;
+  const fundDonut = Object.keys(l.fund_source_mix).length ? donutBlock('ring-loan-fund', l.fund_source_mix, LOAN_FUND_COLORS, {size:150}) : null;
+  const typeDonut = Object.keys(l.loan_type_mix).length ? donutBlock('ring-loan-type', l.loan_type_mix, LOAN_TYPE_COLORS, {size:150, fmt:v=>fmtNum(v)+' loans'}) : null;
+  const statusDonut = Object.keys(l.loan_status_mix).length ? donutBlock('ring-loan-status', l.loan_status_mix, LOAN_STATUS_COLORS, {size:150, fmt:v=>fmtNum(v)+' loans'}) : null;
+  const neverBorrowed = l.kpi.n_vo_never_borrowed;
+  const neverBorrowedLine = neverBorrowed>0
+    ? `<p class="callout-attn" style="margin-top:10px;">${fmtNum(neverBorrowed)} VO${neverBorrowed===1?'':'s'} in your CLF ${neverBorrowed===1?'has':'have'} not taken a loan.</p>`
+    : (neverBorrowed===0 ? `<p class="callout-good" style="margin-top:10px;">All VOs in your CLF have taken a loan.</p>` : '');
+  return `<section><div class="section-head"><h2 class="serif">Loan Portfolio</h2></div>
+    <div class="panel"><div class="tiles n3">
+      ${tile('Active Loans', fmtNum(l.kpi.n_active_loans))}
+      ${tile('Total Disbursed', fmtRs(l.kpi.total_disbursed))}
+      ${tile('Current Outstanding', fmtRs(l.kpi.total_outstanding))}
+    </div></div></section>
+    <section><div class="section-head"><h2 class="serif">Repayment and Returns</h2></div>
+    <div class="panel"><div class="tiles n3">
+      ${tile('Repayment Rate', fmtPct(l.kpi.repayment_rate,1))}
+      ${tile('Active Lending Turnover', turnoverVal, null, turnoverCls)}
+      ${tile('Total XIRR', totalXirrVal, null, totalXirrVal && l.kpi.total_xirr<0 ? 'neg' : 'neutral')}
+    </div></div></section>
+    <section><div class="section-head"><h2 class="serif">Portfolio Composition</h2></div>
+      <div class="panel"><div class="health-grid">
+        <div class="health-card"><h3 class="tip" data-tip="${TIPS['Fund Source']||''}">By Fund Source</h3>${fundDonut?fundDonut.html:'<p class="disclaimer">No data.</p>'}</div>
+        <div class="health-card"><h3 class="tip" data-tip="${TIPS['Type']||''}">By Repayment Type</h3>${typeDonut?typeDonut.html:'<p class="disclaimer">No data.</p>'}</div>
+        <div class="health-card"><h3 class="tip" data-tip="${TIPS['Status']||''}">By Loan Status</h3>${statusDonut?statusDonut.html:'<p class="disclaimer">No data.</p>'}</div>
+        <div class="health-card"><h3 class="tip" data-tip="${TIPS['VO Loan Count Distribution']||''}">VOs by Loan Count</h3><svg id="ring-vo-loan-hist" viewBox="0 0 460 220" style="width:100%;max-width:460px;height:auto;"></svg>${neverBorrowedLine}</div>
+      </div></div></section>
+    ${l.loan_table ? `<section><div class="section-head"><h2 class="serif">All Loans</h2><span class="hint">click a column to sort</span></div>
+      <div class="panel"><div id="loan-detail-table-container"></div></div></section>` : ''}`;
+}
+let loanScheduleVo = '';
+let loanScheduleLoanNo = '';
+function loanScheduleCols(){
+  return [
+    {label:'Month'}, {label:'Amount Due', num:true}, {label:'Amount Repaid', num:true},
+    {label:'Status', tip:'Whether that month\'s scheduled installment was fully paid, partially paid, or not paid at all, based on real repayment transactions recorded in that calendar month.'},
+    {label:'Arrear', num:true}, {label:'Outstanding', num:true},
+  ];
+}
+function loanScheduleRows(rows){
+  return rows.map(r=>[
+    r.month, fmtRs(r.amount_due), fmtRs(r.amount_repaid), monthStatusPill(r.status),
+    r.arrear!=null ? fmtRs(r.arrear) : '—', fmtRs(r.outstanding),
+  ]);
+}
+function renderLoansSchedule(){
+  const l = DATA.loans;
+  const voOpts = l.vo_options.map(v=>`<option value="${v.vo_code}" ${v.vo_code===loanScheduleVo?'selected':''}>${v.vo_name}</option>`).join('');
+  const loanOpts = (loanScheduleVo && l.loan_options[loanScheduleVo]) ? l.loan_options[loanScheduleVo].map(o=>`<option value="${o.loan_no}" ${String(o.loan_no)===loanScheduleLoanNo?'selected':''}>${o.label}</option>`).join('') : '';
+  let tableSection;
+  const selectedLoanOpt = (loanScheduleVo && loanScheduleLoanNo && l.loan_options[loanScheduleVo]) ? l.loan_options[loanScheduleVo].find(o=>String(o.loan_no)===loanScheduleLoanNo) : null;
+  const demandLine = selectedLoanOpt ? `<div class="tiles n2" style="margin-bottom:16px;">
+      ${tile('Current Demand', fmtRs(selectedLoanOpt.current_demand))}
+      ${tile('Arrears', fmtRs(selectedLoanOpt.arrears), null, selectedLoanOpt.arrears>0?'neg':'neutral')}
+    </div>` : '';
+  const sched = (loanScheduleVo && loanScheduleLoanNo && l.schedules[loanScheduleVo]) ? l.schedules[loanScheduleVo][loanScheduleLoanNo] : null;
+  if(sched){
+    if(!sched.reliable){
+      tableSection = `<p class="disclaimer">This loan's raw LokOS schedule shows signs of being restructured or rescheduled, so a from-scratch monthly reconstruction would not reliably match what actually happened - not shown for this loan.</p>`;
+    } else if(!sched.rows.length){
+      tableSection = `<p class="disclaimer">No months fall within our repayment observation window (${l.schedule_window.start} – ${l.schedule_window.end}) for this loan.</p>`;
+    } else {
+      tableSection = tableHtml(loanScheduleCols(), loanScheduleRows(sched.rows));
+    }
+  } else if(loanScheduleVo){
+    tableSection = `<p class="disclaimer">Select a loan number to see its month-wise repayment schedule.</p>`;
+  } else {
+    tableSection = `<p class="disclaimer">Select a Village Organisation and loan number to see its month-wise repayment schedule.</p>`;
+  }
+  return `<section><div class="section-head"><h2 class="serif">Loan Schedule</h2><span class="hint">shown for ${l.schedule_window.start} – ${l.schedule_window.end}, the window we have real repayment records for</span></div>
+    <div class="panel">
+      <div class="selectbar">
+        <label for="loan-vo-select">Village Organisation:</label>
+        <select id="loan-vo-select"><option value="">Select a VO…</option>${voOpts}</select>
+        <label for="loan-no-select">Loan Number:</label>
+        <select id="loan-no-select" ${loanScheduleVo?'':'disabled'}><option value="">Select a loan…</option>${loanOpts}</select>
+      </div>
+      ${demandLine}
+      ${tableSection}
+    </div></section>`;
+}
+function wireLoanScheduleDropdowns(){
+  document.getElementById('loan-vo-select').addEventListener('change', e=>{
+    loanScheduleVo = e.target.value; loanScheduleLoanNo = ''; renderLoans('schedule');
+  });
+  const loanSel = document.getElementById('loan-no-select');
+  if(loanSel) loanSel.addEventListener('change', e=>{
+    loanScheduleLoanNo = e.target.value; renderLoans('schedule');
+  });
+}
+function renderLoans(sub){
+  if(!DATA.loans || !DATA.loans.found){
+    document.getElementById('panel-loans').innerHTML = contextBox('loans') + `<section><div class="panel"><p class="disclaimer">${ERR_MSG_JS.loans}</p></div></section>`;
+    return;
+  }
+  const body = sub==='schedule' ? renderLoansSchedule() : renderLoansOverview();
+  document.getElementById('panel-loans').innerHTML = contextBox('loans') + body;
+  if(sub==='schedule'){
+    wireLoanScheduleDropdowns();
+  } else {
+    const l = DATA.loans;
+    if(Object.keys(l.fund_source_mix).length) donutBlock('ring-loan-fund', l.fund_source_mix, LOAN_FUND_COLORS, {size:150}).draw();
+    if(Object.keys(l.loan_type_mix).length) donutBlock('ring-loan-type', l.loan_type_mix, LOAN_TYPE_COLORS, {size:150, fmt:v=>fmtNum(v)+' loans'}).draw();
+    if(Object.keys(l.loan_status_mix).length) donutBlock('ring-loan-status', l.loan_status_mix, LOAN_STATUS_COLORS, {size:150, fmt:v=>fmtNum(v)+' loans'}).draw();
+    drawVoLoanHistogram('ring-vo-loan-hist', l.vo_loan_histogram);
+    if(l.loan_table) makeSortableTable('loan-detail-table-container', LOAN_DETAIL_COLS(), l.loan_table, loanDetailRow);
+  }
+}
+// ---- District/State: Portfolio Overview only (no per-loan schedule, no full
+// "All Loans" table - both drop at group scope, same reasoning as VRF's
+// VO-Level Breakdown being CLF-only). Reuses renderLoans('overview') UNCHANGED
+// via GROUP_PSEUDO_CLF, same trick as renderGroupFinancial/renderGroupVRF. ----
+function renderGroupLoans(sub){
+  if(!GROUP_DATA.loans.found){
+    document.getElementById('panel-loans').innerHTML = contextBox('loans') + `<section><div class="panel"><p class="disclaimer">${ERR_MSG_JS.loans}</p></div></section>`;
+    return;
+  }
+  DATA = GROUP_PSEUDO_CLF;
+  const scope = isState() ? 'statewide' : `in ${GROUP_DATA.name}`;
+  const note = `<p class="hint" style="margin-bottom:14px;">Aggregated across ${fmtNum(GROUP_DATA.loans.n_clfs_with_loans)} of ${fmtNum(GROUP_DATA.loans.n_total)} CLFs ${scope} with loan data.</p>`;
+  const groupNoun = isState() ? 'Bihar' : `${GROUP_DATA.name} district`;
+  const body = renderLoansOverview().replace(/in your CLF/g, isState() ? 'in Bihar' : `in ${groupNoun}`);
+  document.getElementById('panel-loans').innerHTML = contextBox('loans') + note + body;
+  const l = DATA.loans;
+  if(Object.keys(l.fund_source_mix).length) donutBlock('ring-loan-fund', l.fund_source_mix, LOAN_FUND_COLORS, {size:150}).draw();
+  if(Object.keys(l.loan_type_mix).length) donutBlock('ring-loan-type', l.loan_type_mix, LOAN_TYPE_COLORS, {size:150, fmt:v=>fmtNum(v)+' loans'}).draw();
+  if(Object.keys(l.loan_status_mix).length) donutBlock('ring-loan-status', l.loan_status_mix, LOAN_STATUS_COLORS, {size:150, fmt:v=>fmtNum(v)+' loans'}).draw();
+  drawVoLoanHistogram('ring-vo-loan-hist', l.vo_loan_histogram);
+}
+"""
+
 JS_SCORING = r"""
 let scoreQtrIdx = 0;
 function currentScoring(){ return DATA.scoring.by_quarter[DATA.scoring.quarters[scoreQtrIdx]]; }
@@ -1234,7 +1494,7 @@ function renderScoringOverall(){
   const cats = Object.entries(s.categories);
   const worst = cats.filter(([k,v])=> v.score!==null && v.score<50);
   const attnSentence = worst.length ? `<p class="callout-attn">Your CLF needs to pay the most attention to ${catListPhrase(worst.map(([k])=>k))}.</p>` : '';
-  return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Overall Score']}">Overall Score</h2><span class="hint">equal weight across all 5 categories by default - customize below</span></div>
+  return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Overall Score']}">Overall Score</h2><span class="hint">equal weight across all 7 categories by default - customize below</span></div>
     <div class="panel">
       <div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button id="btn-open-weights" class="weight-btn">&#9881;&#65039; Choose Category Weights</button></div>
       <div class="tiles n1" style="margin-bottom:16px;">${tile('Overall Score', s.overall_score+' / 100', null, 'big-value')}</div>
@@ -1252,6 +1512,17 @@ function renderScoringOverall(){
         </div>`).join('')}</div>
     </div></section>`;
 }
+// ---- Data Coverage detail: the underlying per-source checklist behind the
+// "Data Sources Available" metric in the Data Coverage category (By Category
+// tab) - the category score itself IS scored/weighted like any other (a
+// percentile on count of sources available), this is just the human-readable
+// breakdown of what that count is made of. ----
+function renderDataCoverage(){
+  const da = DATA.data_availability;
+  if(!da) return '';
+  return `<p class="hint" style="margin:10px 0 8px;">${da.n_available} of ${da.n_total} data sources found for your CLF.</p>
+    <div class="pills">${da.sources.map(s=>`<span class="pill ${s.available?'on':''}">${s.label}</span>`).join('')}</div>`;
+}
 function renderScoringByCategory(){
   const s = currentScoring();
   const cats = Object.entries(s.categories);
@@ -1263,7 +1534,7 @@ function renderScoringByCategory(){
   const topSentence = bottomHalf.length ? `<p class="callout-attn" style="margin:0 0 16px;">Your CLF falls in the bottom-half of performance for ${listPhrase(bottomHalf.map(({label})=>label))}.</p>` : '';
   return topSentence + cats.map(([catName,cat])=>`
     <section><div class="section-head"><h2 class="serif">${catName}</h2><span class="hint"><b>Score: ${cat.score!==null?cat.score+'/100':ERR_MSG_JS.not_found}</b></span></div>
-      <div class="panel">${cat.metrics.map(([label,m])=>pctlRow(label, m)).join('')}</div></section>`).join('');
+      <div class="panel">${cat.metrics.map(([label,m])=>pctlRow(label, m)).join('')}${catName==='Data Coverage'?renderDataCoverage():''}</div></section>`).join('');
 }
 // ============================================================================
 // Customizable category weights. The recomputed score itself needs only this
@@ -1273,7 +1544,7 @@ function renderScoringByCategory(){
 // category-scores-only file) is fetched once, lazily, on first open, and
 // cached like every other fetch in this app.
 // ============================================================================
-const WEIGHT_CATS = ['Fund Utilization & Loan Activity', 'Financial Health', 'VRF Fund Health', 'Governance & Compliance', 'Welfare and Livelihood'];
+const WEIGHT_CATS = ['Financial Health', 'Fund Utilization', 'Loan Portfolio', 'VRF Fund Health', 'Governance & Compliance', 'Welfare and Livelihood', 'Data Coverage'];
 let categoryWeights = null;
 let scoringSummaryCache = null;
 
@@ -1378,7 +1649,7 @@ function closeWeightModal(){
 function renderScoring(sub){
   const opts = DATA.scoring.quarters.map((label,i)=>`<option value="${i}" ${i===scoreQtrIdx?'selected':''}>${label}</option>`).join('');
   const dropdown = `<div class="selectbar"><label for="score-qtr-select">Quarter:</label><select id="score-qtr-select">${opts}</select></div>
-    <p class="note-inline">Fund Deployment, Surplus / Deficit, Bookkeeping Accuracy, and every VRF Fund Health, Governance &amp; Compliance, and Welfare and Livelihood metric reflect current standing and don't change by quarter — only the other Fund Utilization &amp; Financial Health line items update.</p>`;
+    <p class="note-inline">Fund Deployment, Surplus / Deficit, Bookkeeping Accuracy, every Loan Portfolio, Data Coverage, VRF Fund Health, Governance &amp; Compliance, and Welfare and Livelihood metric reflect current standing and don't change by quarter — only the other Fund Utilization &amp; Financial Health line items update.</p>`;
   document.getElementById('panel-scoring').innerHTML =
     contextBox('scoring') + dropdown + (sub==='overall' ? renderScoringOverall() : renderScoringByCategory());
   document.getElementById('score-qtr-select').addEventListener('change', e=>{ scoreQtrIdx=+e.target.value; renderScoring(sub); });
@@ -1697,6 +1968,23 @@ function renderGroupScoringOverall(){
   <section><div class="section-head"><h2 class="serif">Category Summary</h2></div>
     <div class="panel">${cats.map(([k,v])=>{ const cr = s.category_ranks[k]; return categoryScoreBlock(k, v, cr&&cr.rank, cr&&cr.n); }).join('')}</div></section>`;
 }
+// ---- District/State Data Coverage detail: the per-source coverage-count
+// breakdown behind the Data Coverage category's single metric, shown within
+// that category's own section in By Category - same convention as the
+// CLF-level pill checklist, just a coverage count/bar per source instead. ----
+function renderGroupDataCoverage(){
+  const da = GROUP_DATA.data_availability;
+  if(!da || !da.sources || !da.sources.length) return '';
+  return da.sources.map(s=>{
+      const pct = s.n_total ? Math.round(100*s.n_available/s.n_total) : 0;
+      return `<div style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
+          <span>${s.label}</span><span style="color:var(--ink-soft);">${fmtNum(s.n_available)} of ${fmtNum(s.n_total)} CLFs</span>
+        </div>
+        <div class="score-bar"><div class="fill" style="width:${pct}%"></div></div>
+      </div>`;
+    }).join('');
+}
 function renderGroupScoringByCategory(){
   const s = GROUP_DATA.scoring;
   const scopeText = isState() ? 'across all CLFs in Bihar' : `across all CLFs in ${GROUP_DATA.name} district`;
@@ -1712,6 +2000,7 @@ function renderGroupScoringByCategory(){
       <div class="panel">
         <p class="desc" style="max-width:none;margin-bottom:14px;">${desc}</p>
         ${metrics.length ? body : `<p class="disclaimer">${ERR_MSG_JS.not_found}</p>`}
+        ${catName==='Data Coverage'?renderGroupDataCoverage():''}
       </div></section>`;
   }).join('');
 }
@@ -1721,11 +2010,13 @@ const CLF_RANK_COLS = () => {
     {label:'Rank', key: mode==='top_bottom_20' ? 'state_rank' : 'district_rank'},
     {label:'CLF', key:'name'},
     {label: mode==='top_bottom_20' ? 'District' : 'Block', key: mode==='top_bottom_20' ? 'district' : 'block'},
-    {label:'Fund Utilization', num:true, key:'Fund Utilization & Loan Activity'},
     {label:'Financial Health', num:true, key:'Financial Health'},
+    {label:'Fund Utilization', num:true, key:'Fund Utilization'},
+    {label:'Loan Portfolio', num:true, key:'Loan Portfolio'},
     {label:'VRF Fund Health', num:true, key:'VRF Fund Health'},
     {label:'Governance', num:true, key:'Governance & Compliance'},
     {label:'Welfare', num:true, key:'Welfare and Livelihood'},
+    {label:'Data Coverage', num:true, key:'Data Coverage'},
     {label:'Overall Score', num:true, key:'overall_score'},
   ];
 };
@@ -1745,11 +2036,13 @@ function clfRankRow(r){
   return [
     `<span class="rank-cell">${fmtNum(rankNum)||'—'}</span>`,
     `<a href="#clf/${r.mis_id}" class="clf-link${tierClass}">${r.name}</a>`, locationCell,
-    r.categories['Fund Utilization & Loan Activity']!=null?r.categories['Fund Utilization & Loan Activity']:'—',
     r.categories['Financial Health']!=null?r.categories['Financial Health']:'—',
+    r.categories['Fund Utilization']!=null?r.categories['Fund Utilization']:'—',
+    r.categories['Loan Portfolio']!=null?r.categories['Loan Portfolio']:'—',
     r.categories['VRF Fund Health']!=null?r.categories['VRF Fund Health']:'—',
     r.categories['Governance & Compliance']!=null?r.categories['Governance & Compliance']:'—',
     r.categories['Welfare and Livelihood']!=null?r.categories['Welfare and Livelihood']:'—',
+    r.categories['Data Coverage']!=null?r.categories['Data Coverage']:'—',
     r.overall_score!=null?`<div class="score-cell"><div class="score-bar"><div class="fill" style="width:${r.overall_score}%"></div></div><span class="score-num">${r.overall_score}</span></div>`:'—',
   ];
 }
@@ -1774,27 +2067,43 @@ function renderGroupScoringRankings(){
 // district ranks, computed the same two-pass way as CLF ranks). ----
 const DISTRICT_RANK_COLS = () => [
   {label:'Rank', key:'state_rank'}, {label:'District', key:'name'}, {label:'CLFs', num:true, key:'n_clfs'},
-  {label:'Fund Utilization', num:true, key:'Fund Utilization & Loan Activity'},
   {label:'Financial Health', num:true, key:'Financial Health'},
+  {label:'Fund Utilization', num:true, key:'Fund Utilization'},
+  {label:'Loan Portfolio', num:true, key:'Loan Portfolio'},
   {label:'VRF Fund Health', num:true, key:'VRF Fund Health'},
   {label:'Governance', num:true, key:'Governance & Compliance'},
   {label:'Welfare', num:true, key:'Welfare and Livelihood'},
+  {label:'Data Coverage', num:true, key:'Data Coverage'},
   {label:'Overall Score', num:true, key:'overall_score'},
 ];
 function districtRankRow(r){
   return [
     `<span class="rank-cell">${fmtNum(r.state_rank)||'—'}</span>`,
-    `<a href="#district/${r.slug}" class="district-link">${r.name}</a>`, fmtNum(r.n_clfs),
-    r.categories['Fund Utilization & Loan Activity']!=null?r.categories['Fund Utilization & Loan Activity']:'—',
+    r.slug ? `<a href="#district/${r.slug}" class="district-link">${r.name}</a>` : `<i>${r.name}</i>`, fmtNum(r.n_clfs),
     r.categories['Financial Health']!=null?r.categories['Financial Health']:'—',
+    r.categories['Fund Utilization']!=null?r.categories['Fund Utilization']:'—',
+    r.categories['Loan Portfolio']!=null?r.categories['Loan Portfolio']:'—',
     r.categories['VRF Fund Health']!=null?r.categories['VRF Fund Health']:'—',
     r.categories['Governance & Compliance']!=null?r.categories['Governance & Compliance']:'—',
     r.categories['Welfare and Livelihood']!=null?r.categories['Welfare and Livelihood']:'—',
+    r.categories['Data Coverage']!=null?r.categories['Data Coverage']:'—',
     r.overall_score!=null?`<div class="score-cell"><div class="score-bar"><div class="fill" style="width:${r.overall_score}%"></div></div><span class="score-num">${r.overall_score}</span></div>`:'—',
   ];
 }
 function flattenedDistrictRankings(){
   return GROUP_DATA.scoring.district_rankings.map(r=>({...r, ...r.categories}));
+}
+// State's own true CLF-weighted aggregate (GROUP_DATA.scoring.category_scores/
+// overall_score), NOT a re-average of the districts array (that would be an
+// unweighted mean-of-means). Only ever called from State view.
+function stateAverageRow(){
+  const cs = GROUP_DATA.scoring.category_scores;
+  const os = GROUP_DATA.scoring.overall_score;
+  // Raw data object, shaped like a real (flattened) district row - lets it
+  // sort naturally alongside real rows in makeSortableTable (see comment
+  // there), rather than being pinned to a fixed position.
+  return { state_rank: null, name: 'State Average', slug: null, n_clfs: GROUP_DATA.overview.n_clfs,
+    categories: cs, overall_score: os, ...cs };
 }
 function renderGroupScoringDistrictRankings(){
   return `<section><div class="section-head"><h2 class="serif">District Performance</h2><span class="hint">all ${GROUP_DATA.scoring.district_rankings.length} districts in Bihar &middot; click a column to sort &middot; click a District to open its tracker</span></div>
@@ -1816,25 +2125,27 @@ function renderGroupScoring(sub){
       makeSortableTable('clf-rankings-container', CLF_RANK_COLS(), flattenedRankings(), clfRankRow);
     }
   }
-  if(sub==='districtrankings'){ makeSortableTable('district-rankings-container', DISTRICT_RANK_COLS(), flattenedDistrictRankings(), districtRankRow); }
+  if(sub==='districtrankings'){ makeSortableTable('district-rankings-container', DISTRICT_RANK_COLS(), flattenedDistrictRankings(), districtRankRow, undefined, stateAverageRow()); }
 }
 """
 
 JS_NAV = r"""
 const TABS = {
   overview: {label:'Overview', render:renderOverview, subtabs:{profile:'Profile', members:'Members', vo:'VO Overview'}},
-  audit: {label:'Audit Reports', render:renderAudit, subtabs:null},
-  financial: {label:'Financial Records', render:renderFinancial, subtabs:{summary:'Summary', statements:'Statements'}},
+  financial: {label:'Financial Records', render:renderFinancial, subtabs:{summary:'Summary', statements:'Statements', disbursement:'Fund Disbursement'}},
+  loans: {label:'Loans', render:renderLoans, subtabs:{overview:'Portfolio Overview', schedule:'Loan Schedule'}},
   vrf: {label:'Vulnerability Reduction Fund', render:renderVRF, subtabs:{kpi:'KPI Snapshot', vobreak:'VO-Level Breakdown', bkrank:'Bookkeeper & CLF Rankings', forecasts:'Forecasts'}},
   vprp: {label:'Village Poverty Reduction Plan', render:renderVPRP, subtabs:{entitlements:'Entitlements', pgsrd:'Public Goods, Services, and Resource Development', sdp:'Social Development Plan'}},
+  audit: {label:'Audit Reports', render:renderAudit, subtabs:null},
   scoring: {label:'Scoring & Ranking', render:renderScoring, subtabs:{overall:'Overall', bycategory:'By Category'}},
 };
 const TABS_DISTRICT = {
   overview: {label:'Overview', render:renderGroupOverview, subtabs:{profile:'Profile', members:'Members'}},
-  audit: {label:'Audit Reports', render:renderGroupAudit, subtabs:null},
-  financial: {label:'Financial Records', render:renderGroupFinancial, subtabs:{summary:'Summary', statements:'Statements'}},
+  financial: {label:'Financial Records', render:renderGroupFinancial, subtabs:{summary:'Summary', statements:'Statements', disbursement:'Fund Disbursement'}},
+  loans: {label:'Loans', render:renderGroupLoans, subtabs:{overview:'Portfolio Overview'}},
   vrf: {label:'Vulnerability Reduction Fund', render:renderGroupVRF, subtabs:{kpi:'KPI Snapshot', forecasts:'Forecasts'}},
   vprp: {label:'Village Poverty Reduction Plan', render:renderGroupVPRP, subtabs:{entitlements:'Entitlements', pgsrd:'Public Goods, Services, and Resource Development', sdp:'Social Development Plan'}},
+  audit: {label:'Audit Reports', render:renderGroupAudit, subtabs:null},
   scoring: {label:'Scoring & Ranking', render:renderGroupScoring, subtabs:{overall:'Overall', bycategory:'By Category', rankings:'CLF Performance'}},
 };
 const TABS_STATE = Object.assign({}, TABS_DISTRICT, {
@@ -2108,7 +2419,7 @@ initShell();
 # ============================================================================
 # Assemble
 # ============================================================================
-FULL_JS = (JS + JS_OVERVIEW + JS_AUDIT + JS_FINANCIAL + JS_VRF + JS_VPRP + JS_SCORING + JS_DISTRICT_STATE + JS_NAV + JS_SHELL)
+FULL_JS = (JS + JS_OVERVIEW + JS_AUDIT + JS_FINANCIAL + JS_VRF + JS_VPRP + JS_LOANS + JS_SCORING + JS_DISTRICT_STATE + JS_NAV + JS_SHELL)
 
 # ============================================================================
 # CSS additions for the District/State tracker (cross-links, standing-card
@@ -2174,6 +2485,7 @@ HTML = f"""<!DOCTYPE html>
     <div class="tabpanel" id="panel-financial"></div>
     <div class="tabpanel" id="panel-vrf"></div>
     <div class="tabpanel" id="panel-vprp"></div>
+    <div class="tabpanel" id="panel-loans"></div>
     <div class="tabpanel" id="panel-scoring"></div>
     <div class="foot-note">Statewide Comprehensive CLF Tracker. Data as computed by <code>build_tracker_data.py</code> and <code>build_district_state_data.py</code>.</div>
   </div>
