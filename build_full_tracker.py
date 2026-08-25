@@ -3683,6 +3683,10 @@ def stage_6_make_shell():
     /* Shared highlighted-callout style for the "needs attention" / "bottom-half" sentences */
     .callout-attn{ text-align:center; font-weight:700; margin:14px 0 0; padding:11px 16px; background:var(--low-soft); color:#8a3226; border-radius:8px; }
     .callout-good{ text-align:center; font-weight:700; margin:14px 0 0; padding:11px 16px; background:var(--primary-soft); color:#1f6b4d; border-radius:8px; }
+    .xirr-highlight{ margin-top:16px; padding:16px 18px; border-radius:10px; font-size:14.5px; line-height:1.55; }
+    .xirr-highlight.pos{ background:var(--primary-soft); color:#1f6b4d; }
+    .xirr-highlight.neg{ background:var(--low-soft); color:#8a3226; }
+    .xirr-highlight.neutral{ background:var(--line); color:var(--ink-soft); font-style:italic; }
     .avg-row td{ font-style:italic; border-bottom:2px solid var(--ink-soft); }
 
     /* Forecast table + line charts (ported from the VRF tracker) */
@@ -4810,6 +4814,22 @@ def stage_6_make_shell():
       const neverBorrowedLine = neverBorrowed>0
         ? `<p class="callout-attn" style="margin-top:10px;">${fmtNum(neverBorrowed)} VO${neverBorrowed===1?'':'s'} in your CLF ${neverBorrowed===1?'has':'have'} not taken a loan.</p>`
         : (neverBorrowed===0 ? `<p class="callout-good" style="margin-top:10px;">All VOs in your CLF have taken a loan.</p>` : '');
+      // XIRR highlight box: district/state rank comes from the already-computed
+      // Loan Portfolio scoring category's "Total XIRR" metric (static/quarter-
+      // invariant, so any quarter's copy is the same) - not recomputed here.
+      const lpCat = DATA.scoring.by_quarter[DATA.scoring.quarters[0]].categories['Loan Portfolio'];
+      const xirrMetric = lpCat && lpCat.metrics.find(([label])=>label==='Total XIRR');
+      const xirrM = xirrMetric ? xirrMetric[1] : null;
+      let xirrBoxHtml;
+      if(l.kpi.total_xirr==null){
+        xirrBoxHtml = `<div class="xirr-highlight neutral">Not enough repayment history yet to compute a return.</div>`;
+      } else {
+        const isPos = l.kpi.total_xirr >= 0;
+        const rankLine = (xirrM && xirrM.district_rank!=null && xirrM.state_rank!=null)
+          ? ` — ${fmtNum(xirrM.district_rank)}${ord(xirrM.district_rank)} of ${fmtNum(xirrM.n_district)} CLFs in ${DATA.overview.district} district and ${fmtNum(xirrM.state_rank)}${ord(xirrM.state_rank)} of ${fmtNum(xirrM.n_state)} CLFs statewide with loan data.`
+          : '';
+        xirrBoxHtml = `<div class="xirr-highlight ${isPos?'pos':'neg'}">This CLF's active loan portfolio is earning a <b>${totalXirrVal} annualized return</b> (Total XIRR)${rankLine}</div>`;
+      }
       return `<section><div class="section-head"><h2 class="serif">Loan Portfolio</h2></div>
         <div class="panel"><div class="tiles n3">
           ${tile('Active Loans', fmtNum(l.kpi.n_active_loans))}
@@ -4821,7 +4841,9 @@ def stage_6_make_shell():
           ${tile('Repayment Rate', fmtPct(l.kpi.repayment_rate,1))}
           ${tile('Active Lending Turnover', turnoverVal, null, turnoverCls)}
           ${tile('Total XIRR', totalXirrVal, null, totalXirrVal && l.kpi.total_xirr<0 ? 'neg' : 'neutral')}
-        </div></div></section>
+        </div>
+        ${xirrBoxHtml}
+        </div></section>
         <section><div class="section-head"><h2 class="serif">Portfolio Composition</h2></div>
           <div class="panel"><div class="health-grid">
             <div class="health-card"><h3 class="tip" data-tip="${TIPS['Fund Source']||''}">By Fund Source</h3>${fundDonut?fundDonut.html:'<p class="disclaimer">No data.</p>'}</div>
