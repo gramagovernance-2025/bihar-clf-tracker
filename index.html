@@ -81,10 +81,18 @@
     .attn-card{ border:1px solid var(--line); border-radius:10px; padding:18px 20px; }
     .attn-card h3{ margin:0 0 4px; font-size:15.5px; font-weight:700; }
     .attn-headline{ font-size:20px; font-weight:700; color:var(--gold); font-variant-numeric:tabular-nums; margin:4px 0 10px; }
-    .table-wrap{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    .table-wrap{ overflow:auto; max-height:60vh; -webkit-overflow-scrolling:touch; }
     table{ width:100%; border-collapse:collapse; }
-    thead th{ text-align:left; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); font-weight:600; padding:0 10px 10px; border-bottom:1px solid var(--line-strong); white-space:nowrap; }
+    thead th{ text-align:left; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); font-weight:600; padding:0 10px 10px; border-bottom:1px solid var(--line-strong); white-space:nowrap; position:sticky; top:0; background:var(--panel); z-index:1; }
     thead th.num, tbody td.num{ text-align:right; }
+    .table-toolbar{ display:flex; justify-content:flex-end; margin-bottom:10px; }
+    .table-search{ font-family:inherit; font-size:13px; padding:7px 12px; border:1px solid var(--line-strong); border-radius:8px; background:var(--panel); color:var(--ink); width:220px; max-width:100%; }
+    .table-search::placeholder{ color:var(--ink-soft); }
+    .table-search:focus{ outline:none; border-color:var(--primary); }
+    tr.no-results td{ text-align:center; color:var(--ink-soft); padding:26px 10px; }
+    .cat-link{ cursor:pointer; }
+    .cat-link:hover{ background:var(--panel-alt); }
+    h2.cat-link:hover{ color:var(--primary); }
     tbody tr{ border-bottom:1px solid var(--line); } tbody tr:last-child{ border-bottom:none; }
     tbody tr:hover{ background:var(--panel-alt); }
     tbody td{ padding:10px 10px; vertical-align:middle; font-variant-numeric:tabular-nums; }
@@ -516,8 +524,19 @@
       // shaped identically to a normal `data` row - it's merged into the sortable
       // pool and sorts naturally by whichever column is clicked (so you can see
       // where it lands relative to real rows), just rendered with a distinguishing
-      // class (avg-row) rather than pinned to a fixed position.
-      const state = { col: null, dir: 1 };
+      // class (avg-row) rather than pinned to a fixed position. It's also exempt
+      // from the search filter below (always shown) - it's a reference row, not
+      // a searchable entity.
+      //
+      // The search box + .table-wrap scroll frame are built ONCE, outside draw()
+      // - draw() only replaces the .table-wrap's innerHTML on every sort/search,
+      // so the search input itself (and whatever the user's mid-typing) survives
+      // re-renders instead of losing focus/value each keystroke.
+      const state = { col: null, dir: 1, search: '' };
+      const container = document.getElementById(containerId);
+      container.innerHTML = `<div class="table-toolbar"><input type="text" class="table-search" placeholder="Search this table…"></div><div class="table-wrap"></div>`;
+      const wrap = container.querySelector('.table-wrap');
+      const searchBox = container.querySelector('.table-search');
       function draw(){
         const fullData = extraRow ? [...data, extraRow] : data;
         const sorted = state.col === null ? fullData : fullData.slice().sort((a, b) => {
@@ -528,19 +547,24 @@
           if(av > bv) return 1 * state.dir;
           return 0;
         });
+        const q = state.search.trim().toLowerCase();
+        // rowBuilder cells can contain markup (links, spans, bars) - strip tags
+        // before matching so search compares against visible text, not HTML.
+        const filtered = !q ? sorted : sorted.filter(item => item === extraRow ||
+          rowBuilder(item).some(v => String(v).replace(/<[^>]*>/g, ' ').toLowerCase().includes(q)));
         const theadHtml = `<tr>${cols.map((c,i)=>{
           const t = c.tip || tip || TIPS[c.label];
           const cls = [c.num?'num':'', t?'th-tip':'', c.key?'sortable':''].filter(Boolean).join(' ');
           const arrow = c.key ? ` <span class="sort-arrow${state.col===i?' active':''}">${state.col===i?(state.dir===1?'▲':'▼'):'⇅'}</span>` : '';
           return `<th${cls?` class="${cls}"`:''}${t?` data-tip="${t}"`:''}${c.key?` data-colidx="${i}"`:''}>${c.label}${arrow}</th>`;
         }).join('')}</tr>`;
-        const tbodyHtml = sorted.map(item=>{
+        const tbodyHtml = filtered.length ? filtered.map(item=>{
           const r = rowBuilder(item);
           const rowCls = item===extraRow ? ' class="avg-row"' : '';
           return `<tr${rowCls}>${r.map((v,i)=>`<td${cols[i].num?' class="num"':''}>${v}</td>`).join('')}</tr>`;
-        }).join('');
-        document.getElementById(containerId).innerHTML = `<div class="table-wrap"><table><thead>${theadHtml}</thead><tbody>${tbodyHtml}</tbody></table></div>`;
-        document.querySelectorAll(`#${containerId} th.sortable`).forEach(th=>{
+        }).join('') : `<tr class="no-results"><td colspan="${cols.length}">No rows match "${state.search}".</td></tr>`;
+        wrap.innerHTML = `<table><thead>${theadHtml}</thead><tbody>${tbodyHtml}</tbody></table>`;
+        wrap.querySelectorAll('th.sortable').forEach(th=>{
           th.addEventListener('click', ()=>{
             const idx = +th.dataset.colidx;
             if(state.col === idx) state.dir *= -1; else { state.col = idx; state.dir = 1; }
@@ -548,6 +572,7 @@
           });
         });
       }
+      searchBox.addEventListener('input', ()=>{ state.search = searchBox.value; draw(); });
       draw();
     }
 
@@ -1516,7 +1541,7 @@
       const cats = Object.entries(s.categories);
       const worst = cats.filter(([k,v])=> v.score!==null && v.score<50);
       const attnSentence = worst.length ? `<p class="callout-attn">Your CLF needs to pay the most attention to ${catListPhrase(worst.map(([k])=>k))}.</p>` : '';
-      return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Overall Score']}">Overall Score</h2><span class="hint">equal weight across all 7 categories by default - customize below</span></div>
+      return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Overall Score']}">Overall Score</h2><span class="hint">equal weight across all 8 categories by default - customize below</span></div>
         <div class="panel">
           <div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button id="btn-open-weights" class="weight-btn">&#9881;&#65039; Choose Category Weights</button></div>
           <div class="tiles n1" style="margin-bottom:16px;">${tile('Overall Score', s.overall_score+' / 100', null, 'big-value')}</div>
@@ -1524,11 +1549,11 @@
             ${standingCard('district', s.overall_district_score, s.overall_district_rank, s.overall_n_district, 'Overall Score', 'Standing vs. District')}
             ${standingCard('state', s.overall_score, s.overall_state_rank, s.overall_n_state, 'Overall Score', 'Standing vs. State')}
           </div></div></section>
-      <section><div class="section-head"><h2 class="serif">Category Summary</h2></div>
+      <section><div class="section-head"><h2 class="serif">Category Summary</h2><span class="hint">click a category to jump to its own tab</span></div>
         <div class="panel">
           ${attnSentence}
           <div style="margin-top:${worst.length?'16px':'0'};">${cats.map(([k,v])=>`
-            <div style="margin-bottom:18px;">
+            <div style="margin-bottom:18px;"${CATEGORY_LINK[k]?` class="cat-link" data-cat="${k}"`:''}>
               ${scorePercent(k, v.score!==null?v.score:0)}
               ${pctlRow('', {district_pctl: v.district_score, state_pctl: v.score, district_rank: v.district_rank, state_rank: v.state_rank, n_district: v.n_district, n_state: v.n_state})}
             </div>`).join('')}</div>
@@ -1555,7 +1580,7 @@
       const bottomHalf = allMetrics.filter(({m})=> m && m.state_pctl!==null && m.state_pctl!==undefined && m.state_pctl<50);
       const topSentence = bottomHalf.length ? `<p class="callout-attn" style="margin:0 0 16px;">Your CLF falls in the bottom-half of performance for ${listPhrase(bottomHalf.map(({label})=>label))}.</p>` : '';
       return topSentence + cats.map(([catName,cat])=>`
-        <section><div class="section-head"><h2 class="serif">${catName}</h2><span class="hint"><b>Score: ${cat.score!==null?cat.score+'/100':ERR_MSG_JS.not_found}</b></span></div>
+        <section><div class="section-head">${catHeaderHtml(catName)}<span class="hint"><b>Score: ${cat.score!==null?cat.score+'/100':ERR_MSG_JS.not_found}</b></span></div>
           <div class="panel">${cat.metrics.map(([label,m])=>pctlRow(label, m)).join('')}${catName==='Data Coverage'?renderDataCoverage():''}</div></section>`).join('');
     }
     // ============================================================================
@@ -1566,7 +1591,7 @@
     // category-scores-only file) is fetched once, lazily, on first open, and
     // cached like every other fetch in this app.
     // ============================================================================
-    const WEIGHT_CATS = ['Financial Health', 'Fund Utilization', 'Loan Portfolio', 'VRF Fund Health', 'Governance & Compliance', 'Welfare and Livelihood', 'Data Coverage'];
+    const WEIGHT_CATS = ['Financial Health', 'Fund Utilization', 'Loan Portfolio', 'VRF Fund Health', 'Governance & Compliance', 'Welfare and Livelihood', 'Audit Score', 'Data Coverage'];
     let categoryWeights = null;
     let scoringSummaryCache = null;
 
@@ -1985,8 +2010,8 @@
           </div>`;
       return `<section><div class="section-head"><h2 class="serif">Overall Score</h2><span class="hint">average of each CLF's own Overall Score, equal weight per CLF</span></div>
         <div class="panel">${soloTile}${standingBlock}</div></section>
-      <section><div class="section-head"><h2 class="serif">Category Summary</h2></div>
-        <div class="panel">${cats.map(([k,v])=>{ const cr = s.category_ranks[k]; return categoryScoreBlock(k, v, cr&&cr.rank, cr&&cr.n); }).join('')}</div></section>`;
+      <section><div class="section-head"><h2 class="serif">Category Summary</h2><span class="hint">click a category to jump to its own tab</span></div>
+        <div class="panel">${cats.map(([k,v])=>{ const cr = s.category_ranks[k]; const inner = categoryScoreBlock(k, v, cr&&cr.rank, cr&&cr.n); return CATEGORY_LINK[k] ? `<div class="cat-link" data-cat="${k}">${inner}</div>` : inner; }).join('')}</div></section>`;
     }
     // ---- District/State Data Coverage detail: the per-source coverage-count
     // breakdown behind the Data Coverage category's single metric, shown within
@@ -2016,7 +2041,7 @@
         const body = isState()
           ? metrics.map(m=>metricStateBlock(m)).join('')
           : metrics.map(m=>scoreRankBar(m.label, m.avg_state_pctl, m.rank, m.n)).join('');
-        return `<section><div class="section-head"><h2 class="serif">${catName}</h2><span class="hint"><b>${isState()?'Statewide':'District'} avg: ${score!=null?score+'/100':ERR_MSG_JS.not_found}</b></span></div>
+        return `<section><div class="section-head">${catHeaderHtml(catName)}<span class="hint"><b>${isState()?'Statewide':'District'} avg: ${score!=null?score+'/100':ERR_MSG_JS.not_found}</b></span></div>
           <div class="panel">
             <p class="desc" style="max-width:none;margin-bottom:14px;">${desc}</p>
             ${metrics.length ? body : `<p class="disclaimer">${ERR_MSG_JS.not_found}</p>`}
@@ -2036,6 +2061,7 @@
         {label:'VRF Fund Health', num:true, key:'VRF Fund Health'},
         {label:'Governance', num:true, key:'Governance & Compliance'},
         {label:'Welfare', num:true, key:'Welfare and Livelihood'},
+        {label:'Audit Score', num:true, key:'Audit Score'},
         {label:'Data Coverage', num:true, key:'Data Coverage'},
         {label:'Overall Score', num:true, key:'overall_score'},
       ];
@@ -2062,6 +2088,7 @@
         r.categories['VRF Fund Health']!=null?r.categories['VRF Fund Health']:'—',
         r.categories['Governance & Compliance']!=null?r.categories['Governance & Compliance']:'—',
         r.categories['Welfare and Livelihood']!=null?r.categories['Welfare and Livelihood']:'—',
+        r.categories['Audit Score']!=null?r.categories['Audit Score']:'—',
         r.categories['Data Coverage']!=null?r.categories['Data Coverage']:'—',
         r.overall_score!=null?`<div class="score-cell"><div class="score-bar"><div class="fill" style="width:${r.overall_score}%"></div></div><span class="score-num">${r.overall_score}</span></div>`:'—',
       ];
@@ -2093,6 +2120,7 @@
       {label:'VRF Fund Health', num:true, key:'VRF Fund Health'},
       {label:'Governance', num:true, key:'Governance & Compliance'},
       {label:'Welfare', num:true, key:'Welfare and Livelihood'},
+      {label:'Audit Score', num:true, key:'Audit Score'},
       {label:'Data Coverage', num:true, key:'Data Coverage'},
       {label:'Overall Score', num:true, key:'overall_score'},
     ];
@@ -2106,6 +2134,7 @@
         r.categories['VRF Fund Health']!=null?r.categories['VRF Fund Health']:'—',
         r.categories['Governance & Compliance']!=null?r.categories['Governance & Compliance']:'—',
         r.categories['Welfare and Livelihood']!=null?r.categories['Welfare and Livelihood']:'—',
+        r.categories['Audit Score']!=null?r.categories['Audit Score']:'—',
         r.categories['Data Coverage']!=null?r.categories['Data Coverage']:'—',
         r.overall_score!=null?`<div class="score-cell"><div class="score-bar"><div class="fill" style="width:${r.overall_score}%"></div></div><span class="score-num">${r.overall_score}</span></div>`:'—',
       ];
@@ -2176,6 +2205,49 @@
       if(CURRENT_VIEW==='district') return TABS_DISTRICT;
       if(CURRENT_VIEW==='state') return TABS_STATE;
       return TABS;
+    }
+
+    // ---- Scoring & Ranking category -> tab/subtab hyperlinks. Same mapping
+    // works at CLF/District/State level since all 3 TABS_* objects share the
+    // same top-level ids (overview/financial/loans/vrf/vprp/audit/scoring).
+    // Fund Utilization and Financial Health share a target (both are F01/F03/
+    // F05-derived, rendered on the same Financial Records > Summary subtab);
+    // same for Governance & Compliance / Welfare and Livelihood (both live in
+    // Overview > Profile). Data Coverage has no corresponding tab elsewhere in
+    // the tracker - it's a meta-category about which data sources exist, fully
+    // explained inline via renderDataCoverage()/renderGroupDataCoverage() - so
+    // it's deliberately left out of this map (not clickable). ----
+    const CATEGORY_LINK = {
+      'Financial Health': {tab:'financial', sub:'summary'},
+      'Fund Utilization': {tab:'financial', sub:'summary'},
+      'Loan Portfolio': {tab:'loans', sub:'overview'},
+      'VRF Fund Health': {tab:'vrf', sub:'kpi'},
+      'Governance & Compliance': {tab:'overview', sub:'profile'},
+      'Welfare and Livelihood': {tab:'overview', sub:'profile'},
+      'Audit Score': {tab:'audit', sub:null},
+    };
+    function catHeaderHtml(catName){
+      const linkable = !!CATEGORY_LINK[catName];
+      return `<h2 class="serif${linkable?' cat-link':''}"${linkable?` data-cat="${catName}"`:''}>${catName}</h2>`;
+    }
+    // Delegated (not per-render) click handler for every .cat-link element,
+    // wherever it appears - same pattern as initTooltips()'s delegation.
+    // Switches tab/subtab and re-renders, exactly like the tabbar/subtabbar's
+    // own click handlers do.
+    function initCategoryLinks(){
+      document.addEventListener('click', e=>{
+        const el = e.target.closest('.cat-link');
+        if(!el) return;
+        const target = CATEGORY_LINK[el.dataset.cat];
+        if(!target) return;
+        const tabs = getTabs();
+        currentTab = target.tab;
+        currentSub = target.sub && tabs[currentTab].subtabs && tabs[currentTab].subtabs[target.sub]
+          ? target.sub
+          : (tabs[currentTab].subtabs ? Object.keys(tabs[currentTab].subtabs)[0] : null);
+        renderAll();
+        window.scrollTo({top:0, behavior:'smooth'});
+      });
     }
 
     function renderTabBar(){
@@ -2420,6 +2492,7 @@
       document.getElementById('btn-view-state').addEventListener('click', ()=>{ window.location.hash = 'state'; });
 
       initTooltips();
+      initCategoryLinks();
       window.addEventListener('hashchange', handleHash);
       handleHash();
     }

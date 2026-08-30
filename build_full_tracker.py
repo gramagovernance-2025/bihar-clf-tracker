@@ -52,6 +52,33 @@ Purpose:  Consolidated, single-file build pipeline for the Bihar Comprehensive
           scope as ordinary module-level names, no import needed.
 """
 
+# master['district'] (clf_id_crosswalk.dta, used throughout as the lookup key
+# for "which district is this CLF in") spells 4 districts differently than
+# several OTHER raw sources scraped from a different page/portal of the same
+# site: F01/F03/F05 (district_name), lokos_groups_clean.dta (district, feeds
+# Governance & Compliance / Welfare and Livelihood via g_district), and the
+# VPRP entitlements/PGSRD/SDP cleaned files (district). Found via MIS ID
+# 1014157 (Aurangabad) showing every Financial Health/Fund Utilization metric
+# as district="Not Found" while state rank worked fine (state comparisons
+# aren't district-filtered, so they don't hit this); user then found the same
+# pattern in Governance & Compliance and Welfare and Livelihood. Checking every
+# raw source's own district values against master's turned up the same 4
+# mismatches everywhere: a typo (AURANAGABAD), two Hindi/English name
+# variants (PURBI/PASHCHIM CHAMPARAN), and an extra suffix (KAIMUR alias
+# BHABUA). For VPRP specifically this isn't just a ranking gap - entitlements/
+# PGSRD/SDP are looked up per-CLF by (district, clf_name), so the mismatch
+# made those 4 districts' CLFs come back with NO VPRP data at all, not just
+# unranked. Apply this fix to every raw source's district-name column
+# immediately after loading it, before any comparison against master's
+# spelling.
+DISTRICT_NAME_FIX = {
+    "AURANAGABAD": "AURANGABAD",           # typo in the source portal's own dropdown label
+    "PURBI CHAMPARAN": "EAST CHAMPARAN",   # Hindi vs English naming; master uses English
+    "PASHCHIM CHAMPARAN": "WEST CHAMPARAN",
+    "KAIMUR alias BHABUA": "KAIMUR",       # master drops the "alias BHABUA" suffix
+    "KAIMUR ALIAS BHABUA": "KAIMUR",       # same, seen all-caps in some sources
+}
+
 def stage_1_build_clf_data():
     """
     Author:   Claude (for Mohan)
@@ -168,6 +195,10 @@ def stage_1_build_clf_data():
     # population, AND Scoring's SPA/status population - was 3 separate reads) ----
     print(f"[{elapsed()}] Loading groups/audit/members...")
     g = pd.read_stata(f"{CLEANED}/lokos_groups_clean.dta", convert_categoricals=True)
+    # see module-level DISTRICT_NAME_FIX docstring - g['district'] feeds
+    # g_pop/mem_pop['g_district'] below, compared against master['district']
+    # in score_from_pop() for Governance & Compliance / Welfare and Livelihood.
+    g["district"] = g["district"].replace(DISTRICT_NAME_FIX)
     audit_all = pd.read_stata(f"{CLEANED}/audits_clf_transactions_merged.dta", convert_categoricals=True)
     mem = pd.read_stata(f"{CLEANED}/lokos_members_clf_collapsed.dta", convert_categoricals=False)
 
@@ -303,6 +334,12 @@ def stage_1_build_clf_data():
     f03_raw = pd.concat([pd.read_csv(f) for f in glob.glob(f"{RAWF}/F03 Receipts & Payments/F03_*_CLF_level.csv")], ignore_index=True)
     f05_raw = pd.concat([pd.read_csv(f) for f in glob.glob(f"{RAWF}/F05 Transactions/F05_*_CLF_level.csv")], ignore_index=True)
 
+    # see module-level DISTRICT_NAME_FIX docstring for why this is needed -
+    # F01/F03/F05's district_name doesn't always spell things the same way as
+    # master['district'], the lookup key every score_metric() call below uses.
+    for _df in (f01_raw, f03_raw, f05_raw):
+        _df["district_name"] = _df["district_name"].replace(DISTRICT_NAME_FIX)
+
     # --- 6a. Financial-metric peer population: percentiles only need each peer
     # CLF's *value*, not its identity, so no ID-matching is needed here at all -
     # that's only needed to find OUR OWN CLF's row (done per-CLF below via the
@@ -380,6 +417,12 @@ def stage_1_build_clf_data():
     ent_raw = pd.read_stata(f"{CLEANED}/clf_vprp_entitlements.dta", convert_categoricals=True)
     pgsrd_raw = pd.read_stata(f"{CLEANED}/clf_pgsrd_requests.dta", convert_categoricals=True)
     sdp_raw = pd.read_stata(f"{CLEANED}/clf_sdp.dta", convert_categoricals=True)
+    # see module-level DISTRICT_NAME_FIX docstring - vprp_year_filter() below
+    # compares these against `district` (master's spelling); without this,
+    # every CLF in the 4 affected districts silently gets NO VPRP data at all,
+    # not just an unranked score.
+    for _df in (ent_raw, pgsrd_raw, sdp_raw):
+        _df["district"] = _df["district"].replace(DISTRICT_NAME_FIX)
 
     roles = ["Bank Correspondent Shakhi (BC Shakhi)","Bank Shakhi","Bima Sakhi","Business Development Service Provider (BDSP)",
              "CLF Book Keeper/ Accountant","Community Auditor","Community Coordinator",
@@ -1224,6 +1267,11 @@ def stage_2_build_vprp_vo_data():
     ent_raw = pd.read_stata(f"{CLEANED}/clf_vprp_entitlements.dta", convert_categoricals=True)
     pgsrd_raw = pd.read_stata(f"{CLEANED}/clf_pgsrd_requests.dta", convert_categoricals=True)
     sdp_raw = pd.read_stata(f"{CLEANED}/clf_sdp.dta", convert_categoricals=True)
+    # see module-level DISTRICT_NAME_FIX docstring - ent_groups/pgsrd_groups/
+    # sdp_groups below are keyed by (district, clf_name); without this, every
+    # CLF in the 4 affected districts falls through to EMPTY_ENT/PGSRD/SDP.
+    for _df in (ent_raw, pgsrd_raw, sdp_raw):
+        _df["district"] = _df["district"].replace(DISTRICT_NAME_FIX)
     print(f"[{elapsed()}] ent={len(ent_raw)} pgsrd={len(pgsrd_raw)} sdp={len(sdp_raw)} rows")
 
     print(f"[{elapsed()}] Pre-grouping raw VPRP frames by (district, clf_name) for fast lookup...")
@@ -2137,10 +2185,11 @@ def stage_4_build_loan_scoring():
     NEW_CAT = "Fund Utilization"
     LOAN_CAT = "Loan Portfolio"
     DATA_CAT = "Data Coverage"
+    AUDIT_CAT = "Audit Score"
 
     CATEGORY_ORDER = ["Financial Health", "Fund Utilization", "Loan Portfolio",
                        "VRF Fund Health", "Governance & Compliance", "Welfare and Livelihood",
-                       "Data Coverage"]
+                       "Audit Score", "Data Coverage"]
 
     METRIC_DEFS = [
         ("Repayment Rate", "repayment_rate", True),
@@ -2328,6 +2377,34 @@ def stage_4_build_loan_scoring():
         for label, bq in d["scoring"]["by_quarter"].items():
             bq["categories"][DATA_CAT] = cat_dict
 
+    # ---- Step 5b: inject Audit Score - one metric ("Total Audit Score"),
+    # reusing the percentile/rank already computed against total_marks_audit in
+    # stage_1's AUDIT section (d["audit"]["district_pctl"/"state_pctl"/
+    # "district_rank"/"state_rank"/"n_district"/"n_state"]), not a fresh pandas
+    # ranking pass. This is deliberately MORE precise than the Step 7 re-rank
+    # below (which ranks Loan Portfolio/Data Coverage off their own already-
+    # rounded 0-100 `score`) - here the rank is computed off the raw
+    # total_marks_audit value in stage_1, so it isn't degraded by percentile
+    # rounding. Static/current-standing like every other category added here -
+    # audit reports are a point-in-time FY artifact, not a quarterly series.
+    # CLFs with no Q4 audit ("found": False) get the key present with every
+    # value None, same convention as Loan Portfolio/Data Coverage above. ----
+    for mis, d in clfs.items():
+        a = d.get("audit", {})
+        if a.get("found") and a.get("total_score") is not None:
+            m = {"district_pctl": a["district_pctl"], "state_pctl": a["state_pctl"],
+                 "district_rank": a["district_rank"], "state_rank": a["state_rank"],
+                 "n_district": a["n_district"], "n_state": a["n_state"]}
+            cat_dict = {"metrics": [("Total Audit Score", m)],
+                        "score": a["state_pctl"], "district_score": a["district_pctl"],
+                        "state_rank": a["state_rank"], "district_rank": a["district_rank"],
+                        "n_state": a["n_state"], "n_district": a["n_district"]}
+        else:
+            cat_dict = {"metrics": [("Total Audit Score", None)], "score": None, "district_score": None,
+                        "state_rank": None, "district_rank": None, "n_state": None, "n_district": None}
+        for label, bq in d["scoring"]["by_quarter"].items():
+            bq["categories"][AUDIT_CAT] = cat_dict
+
     # ---- Step 6: explicit final category-order rebuild - dict insertion order
     # drives display order throughout the JS, and the pop()/assign() rename in
     # Step 1 does NOT preserve original position, so this can't be left implicit. ----
@@ -2461,7 +2538,7 @@ def stage_5_build_district_state():
     T0 = time.time()
     def elapsed(): return f"{time.time()-T0:.1f}s"
 
-    CATS = ["Financial Health", "Fund Utilization", "Loan Portfolio", "VRF Fund Health", "Governance & Compliance", "Welfare and Livelihood", "Data Coverage"]
+    CATS = ["Financial Health", "Fund Utilization", "Loan Portfolio", "VRF Fund Health", "Governance & Compliance", "Welfare and Livelihood", "Audit Score", "Data Coverage"]
 
     def slugify(name):
         return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
@@ -3106,6 +3183,8 @@ def stage_5_build_district_state():
         pct_aadhaar = wavg([(c["overview"].get("pct_aadhaar"), c["overview"]["n_members"]) for c in CLFS])
         demand_per_member = round(latest_q_fin["new_demand_amt"] / n_members, 1) if (latest_q_fin and n_members) else None
         bookkeeping_accuracy = round(100 - abs(f01_agg["balance_gap_rs"] / f01_agg["total_assets"] * 100), 1) if f01_agg["total_assets"] else None
+        audit_scores = [c["audit"]["total_score"] for c in CLFS if c["audit"].get("found") and c["audit"].get("total_score") is not None]
+        avg_audit_score = round(sum(audit_scores) / len(audit_scores), 1) if audit_scores else None
 
         # (value, format_code, short descriptor appended after the formatted
         # number - e.g. "80.6% fund deployment ratio", "42.3% of CLFs are Model
@@ -3122,6 +3201,7 @@ def stage_5_build_district_state():
                 round(100 * loans_agg["kpi"]["total_arrears"] / total_current_demand_l, 1) if total_current_demand_l else None,
                 "pct", "of current demand overdue"),
             ("Loan Portfolio", "Total XIRR"): (loans_agg["kpi"]["total_xirr"], "pct_signed", "annualized"),
+            ("Audit Score", "Total Audit Score"): (avg_audit_score, "of_100", "average audit score"),
             ("Data Coverage", "Data Sources Available"): (
                 (sum(c["data_availability"]["n_available"] for c in CLFS) / n_clfs) if n_clfs else None,
                 "of_11", ""),
@@ -3561,10 +3641,18 @@ def stage_6_make_shell():
     .attn-card{ border:1px solid var(--line); border-radius:10px; padding:18px 20px; }
     .attn-card h3{ margin:0 0 4px; font-size:15.5px; font-weight:700; }
     .attn-headline{ font-size:20px; font-weight:700; color:var(--gold); font-variant-numeric:tabular-nums; margin:4px 0 10px; }
-    .table-wrap{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    .table-wrap{ overflow:auto; max-height:60vh; -webkit-overflow-scrolling:touch; }
     table{ width:100%; border-collapse:collapse; }
-    thead th{ text-align:left; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); font-weight:600; padding:0 10px 10px; border-bottom:1px solid var(--line-strong); white-space:nowrap; }
+    thead th{ text-align:left; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); font-weight:600; padding:0 10px 10px; border-bottom:1px solid var(--line-strong); white-space:nowrap; position:sticky; top:0; background:var(--panel); z-index:1; }
     thead th.num, tbody td.num{ text-align:right; }
+    .table-toolbar{ display:flex; justify-content:flex-end; margin-bottom:10px; }
+    .table-search{ font-family:inherit; font-size:13px; padding:7px 12px; border:1px solid var(--line-strong); border-radius:8px; background:var(--panel); color:var(--ink); width:220px; max-width:100%; }
+    .table-search::placeholder{ color:var(--ink-soft); }
+    .table-search:focus{ outline:none; border-color:var(--primary); }
+    tr.no-results td{ text-align:center; color:var(--ink-soft); padding:26px 10px; }
+    .cat-link{ cursor:pointer; }
+    .cat-link:hover{ background:var(--panel-alt); }
+    h2.cat-link:hover{ color:var(--primary); }
     tbody tr{ border-bottom:1px solid var(--line); } tbody tr:last-child{ border-bottom:none; }
     tbody tr:hover{ background:var(--panel-alt); }
     tbody td{ padding:10px 10px; vertical-align:middle; font-variant-numeric:tabular-nums; }
@@ -3945,8 +4033,19 @@ def stage_6_make_shell():
       // shaped identically to a normal `data` row - it's merged into the sortable
       // pool and sorts naturally by whichever column is clicked (so you can see
       // where it lands relative to real rows), just rendered with a distinguishing
-      // class (avg-row) rather than pinned to a fixed position.
-      const state = { col: null, dir: 1 };
+      // class (avg-row) rather than pinned to a fixed position. It's also exempt
+      // from the search filter below (always shown) - it's a reference row, not
+      // a searchable entity.
+      //
+      // The search box + .table-wrap scroll frame are built ONCE, outside draw()
+      // - draw() only replaces the .table-wrap's innerHTML on every sort/search,
+      // so the search input itself (and whatever the user's mid-typing) survives
+      // re-renders instead of losing focus/value each keystroke.
+      const state = { col: null, dir: 1, search: '' };
+      const container = document.getElementById(containerId);
+      container.innerHTML = `<div class="table-toolbar"><input type="text" class="table-search" placeholder="Search this table…"></div><div class="table-wrap"></div>`;
+      const wrap = container.querySelector('.table-wrap');
+      const searchBox = container.querySelector('.table-search');
       function draw(){
         const fullData = extraRow ? [...data, extraRow] : data;
         const sorted = state.col === null ? fullData : fullData.slice().sort((a, b) => {
@@ -3957,19 +4056,24 @@ def stage_6_make_shell():
           if(av > bv) return 1 * state.dir;
           return 0;
         });
+        const q = state.search.trim().toLowerCase();
+        // rowBuilder cells can contain markup (links, spans, bars) - strip tags
+        // before matching so search compares against visible text, not HTML.
+        const filtered = !q ? sorted : sorted.filter(item => item === extraRow ||
+          rowBuilder(item).some(v => String(v).replace(/<[^>]*>/g, ' ').toLowerCase().includes(q)));
         const theadHtml = `<tr>${cols.map((c,i)=>{
           const t = c.tip || tip || TIPS[c.label];
           const cls = [c.num?'num':'', t?'th-tip':'', c.key?'sortable':''].filter(Boolean).join(' ');
           const arrow = c.key ? ` <span class="sort-arrow${state.col===i?' active':''}">${state.col===i?(state.dir===1?'▲':'▼'):'⇅'}</span>` : '';
           return `<th${cls?` class="${cls}"`:''}${t?` data-tip="${t}"`:''}${c.key?` data-colidx="${i}"`:''}>${c.label}${arrow}</th>`;
         }).join('')}</tr>`;
-        const tbodyHtml = sorted.map(item=>{
+        const tbodyHtml = filtered.length ? filtered.map(item=>{
           const r = rowBuilder(item);
           const rowCls = item===extraRow ? ' class="avg-row"' : '';
           return `<tr${rowCls}>${r.map((v,i)=>`<td${cols[i].num?' class="num"':''}>${v}</td>`).join('')}</tr>`;
-        }).join('');
-        document.getElementById(containerId).innerHTML = `<div class="table-wrap"><table><thead>${theadHtml}</thead><tbody>${tbodyHtml}</tbody></table></div>`;
-        document.querySelectorAll(`#${containerId} th.sortable`).forEach(th=>{
+        }).join('') : `<tr class="no-results"><td colspan="${cols.length}">No rows match "${state.search}".</td></tr>`;
+        wrap.innerHTML = `<table><thead>${theadHtml}</thead><tbody>${tbodyHtml}</tbody></table>`;
+        wrap.querySelectorAll('th.sortable').forEach(th=>{
           th.addEventListener('click', ()=>{
             const idx = +th.dataset.colidx;
             if(state.col === idx) state.dir *= -1; else { state.col = idx; state.dir = 1; }
@@ -3977,6 +4081,7 @@ def stage_6_make_shell():
           });
         });
       }
+      searchBox.addEventListener('input', ()=>{ state.search = searchBox.value; draw(); });
       draw();
     }
 
@@ -4963,7 +5068,7 @@ def stage_6_make_shell():
       const cats = Object.entries(s.categories);
       const worst = cats.filter(([k,v])=> v.score!==null && v.score<50);
       const attnSentence = worst.length ? `<p class="callout-attn">Your CLF needs to pay the most attention to ${catListPhrase(worst.map(([k])=>k))}.</p>` : '';
-      return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Overall Score']}">Overall Score</h2><span class="hint">equal weight across all 7 categories by default - customize below</span></div>
+      return `<section><div class="section-head"><h2 class="serif tip" data-tip="${TIPS['Overall Score']}">Overall Score</h2><span class="hint">equal weight across all 8 categories by default - customize below</span></div>
         <div class="panel">
           <div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button id="btn-open-weights" class="weight-btn">&#9881;&#65039; Choose Category Weights</button></div>
           <div class="tiles n1" style="margin-bottom:16px;">${tile('Overall Score', s.overall_score+' / 100', null, 'big-value')}</div>
@@ -4971,11 +5076,11 @@ def stage_6_make_shell():
             ${standingCard('district', s.overall_district_score, s.overall_district_rank, s.overall_n_district, 'Overall Score', 'Standing vs. District')}
             ${standingCard('state', s.overall_score, s.overall_state_rank, s.overall_n_state, 'Overall Score', 'Standing vs. State')}
           </div></div></section>
-      <section><div class="section-head"><h2 class="serif">Category Summary</h2></div>
+      <section><div class="section-head"><h2 class="serif">Category Summary</h2><span class="hint">click a category to jump to its own tab</span></div>
         <div class="panel">
           ${attnSentence}
           <div style="margin-top:${worst.length?'16px':'0'};">${cats.map(([k,v])=>`
-            <div style="margin-bottom:18px;">
+            <div style="margin-bottom:18px;"${CATEGORY_LINK[k]?` class="cat-link" data-cat="${k}"`:''}>
               ${scorePercent(k, v.score!==null?v.score:0)}
               ${pctlRow('', {district_pctl: v.district_score, state_pctl: v.score, district_rank: v.district_rank, state_rank: v.state_rank, n_district: v.n_district, n_state: v.n_state})}
             </div>`).join('')}</div>
@@ -5002,7 +5107,7 @@ def stage_6_make_shell():
       const bottomHalf = allMetrics.filter(({m})=> m && m.state_pctl!==null && m.state_pctl!==undefined && m.state_pctl<50);
       const topSentence = bottomHalf.length ? `<p class="callout-attn" style="margin:0 0 16px;">Your CLF falls in the bottom-half of performance for ${listPhrase(bottomHalf.map(({label})=>label))}.</p>` : '';
       return topSentence + cats.map(([catName,cat])=>`
-        <section><div class="section-head"><h2 class="serif">${catName}</h2><span class="hint"><b>Score: ${cat.score!==null?cat.score+'/100':ERR_MSG_JS.not_found}</b></span></div>
+        <section><div class="section-head">${catHeaderHtml(catName)}<span class="hint"><b>Score: ${cat.score!==null?cat.score+'/100':ERR_MSG_JS.not_found}</b></span></div>
           <div class="panel">${cat.metrics.map(([label,m])=>pctlRow(label, m)).join('')}${catName==='Data Coverage'?renderDataCoverage():''}</div></section>`).join('');
     }
     // ============================================================================
@@ -5013,7 +5118,7 @@ def stage_6_make_shell():
     // category-scores-only file) is fetched once, lazily, on first open, and
     // cached like every other fetch in this app.
     // ============================================================================
-    const WEIGHT_CATS = ['Financial Health', 'Fund Utilization', 'Loan Portfolio', 'VRF Fund Health', 'Governance & Compliance', 'Welfare and Livelihood', 'Data Coverage'];
+    const WEIGHT_CATS = ['Financial Health', 'Fund Utilization', 'Loan Portfolio', 'VRF Fund Health', 'Governance & Compliance', 'Welfare and Livelihood', 'Audit Score', 'Data Coverage'];
     let categoryWeights = null;
     let scoringSummaryCache = null;
 
@@ -5434,8 +5539,8 @@ def stage_6_make_shell():
           </div>`;
       return `<section><div class="section-head"><h2 class="serif">Overall Score</h2><span class="hint">average of each CLF's own Overall Score, equal weight per CLF</span></div>
         <div class="panel">${soloTile}${standingBlock}</div></section>
-      <section><div class="section-head"><h2 class="serif">Category Summary</h2></div>
-        <div class="panel">${cats.map(([k,v])=>{ const cr = s.category_ranks[k]; return categoryScoreBlock(k, v, cr&&cr.rank, cr&&cr.n); }).join('')}</div></section>`;
+      <section><div class="section-head"><h2 class="serif">Category Summary</h2><span class="hint">click a category to jump to its own tab</span></div>
+        <div class="panel">${cats.map(([k,v])=>{ const cr = s.category_ranks[k]; const inner = categoryScoreBlock(k, v, cr&&cr.rank, cr&&cr.n); return CATEGORY_LINK[k] ? `<div class="cat-link" data-cat="${k}">${inner}</div>` : inner; }).join('')}</div></section>`;
     }
     // ---- District/State Data Coverage detail: the per-source coverage-count
     // breakdown behind the Data Coverage category's single metric, shown within
@@ -5465,7 +5570,7 @@ def stage_6_make_shell():
         const body = isState()
           ? metrics.map(m=>metricStateBlock(m)).join('')
           : metrics.map(m=>scoreRankBar(m.label, m.avg_state_pctl, m.rank, m.n)).join('');
-        return `<section><div class="section-head"><h2 class="serif">${catName}</h2><span class="hint"><b>${isState()?'Statewide':'District'} avg: ${score!=null?score+'/100':ERR_MSG_JS.not_found}</b></span></div>
+        return `<section><div class="section-head">${catHeaderHtml(catName)}<span class="hint"><b>${isState()?'Statewide':'District'} avg: ${score!=null?score+'/100':ERR_MSG_JS.not_found}</b></span></div>
           <div class="panel">
             <p class="desc" style="max-width:none;margin-bottom:14px;">${desc}</p>
             ${metrics.length ? body : `<p class="disclaimer">${ERR_MSG_JS.not_found}</p>`}
@@ -5485,6 +5590,7 @@ def stage_6_make_shell():
         {label:'VRF Fund Health', num:true, key:'VRF Fund Health'},
         {label:'Governance', num:true, key:'Governance & Compliance'},
         {label:'Welfare', num:true, key:'Welfare and Livelihood'},
+        {label:'Audit Score', num:true, key:'Audit Score'},
         {label:'Data Coverage', num:true, key:'Data Coverage'},
         {label:'Overall Score', num:true, key:'overall_score'},
       ];
@@ -5511,6 +5617,7 @@ def stage_6_make_shell():
         r.categories['VRF Fund Health']!=null?r.categories['VRF Fund Health']:'—',
         r.categories['Governance & Compliance']!=null?r.categories['Governance & Compliance']:'—',
         r.categories['Welfare and Livelihood']!=null?r.categories['Welfare and Livelihood']:'—',
+        r.categories['Audit Score']!=null?r.categories['Audit Score']:'—',
         r.categories['Data Coverage']!=null?r.categories['Data Coverage']:'—',
         r.overall_score!=null?`<div class="score-cell"><div class="score-bar"><div class="fill" style="width:${r.overall_score}%"></div></div><span class="score-num">${r.overall_score}</span></div>`:'—',
       ];
@@ -5542,6 +5649,7 @@ def stage_6_make_shell():
       {label:'VRF Fund Health', num:true, key:'VRF Fund Health'},
       {label:'Governance', num:true, key:'Governance & Compliance'},
       {label:'Welfare', num:true, key:'Welfare and Livelihood'},
+      {label:'Audit Score', num:true, key:'Audit Score'},
       {label:'Data Coverage', num:true, key:'Data Coverage'},
       {label:'Overall Score', num:true, key:'overall_score'},
     ];
@@ -5555,6 +5663,7 @@ def stage_6_make_shell():
         r.categories['VRF Fund Health']!=null?r.categories['VRF Fund Health']:'—',
         r.categories['Governance & Compliance']!=null?r.categories['Governance & Compliance']:'—',
         r.categories['Welfare and Livelihood']!=null?r.categories['Welfare and Livelihood']:'—',
+        r.categories['Audit Score']!=null?r.categories['Audit Score']:'—',
         r.categories['Data Coverage']!=null?r.categories['Data Coverage']:'—',
         r.overall_score!=null?`<div class="score-cell"><div class="score-bar"><div class="fill" style="width:${r.overall_score}%"></div></div><span class="score-num">${r.overall_score}</span></div>`:'—',
       ];
@@ -5627,6 +5736,49 @@ def stage_6_make_shell():
       if(CURRENT_VIEW==='district') return TABS_DISTRICT;
       if(CURRENT_VIEW==='state') return TABS_STATE;
       return TABS;
+    }
+
+    // ---- Scoring & Ranking category -> tab/subtab hyperlinks. Same mapping
+    // works at CLF/District/State level since all 3 TABS_* objects share the
+    // same top-level ids (overview/financial/loans/vrf/vprp/audit/scoring).
+    // Fund Utilization and Financial Health share a target (both are F01/F03/
+    // F05-derived, rendered on the same Financial Records > Summary subtab);
+    // same for Governance & Compliance / Welfare and Livelihood (both live in
+    // Overview > Profile). Data Coverage has no corresponding tab elsewhere in
+    // the tracker - it's a meta-category about which data sources exist, fully
+    // explained inline via renderDataCoverage()/renderGroupDataCoverage() - so
+    // it's deliberately left out of this map (not clickable). ----
+    const CATEGORY_LINK = {
+      'Financial Health': {tab:'financial', sub:'summary'},
+      'Fund Utilization': {tab:'financial', sub:'summary'},
+      'Loan Portfolio': {tab:'loans', sub:'overview'},
+      'VRF Fund Health': {tab:'vrf', sub:'kpi'},
+      'Governance & Compliance': {tab:'overview', sub:'profile'},
+      'Welfare and Livelihood': {tab:'overview', sub:'profile'},
+      'Audit Score': {tab:'audit', sub:null},
+    };
+    function catHeaderHtml(catName){
+      const linkable = !!CATEGORY_LINK[catName];
+      return `<h2 class="serif${linkable?' cat-link':''}"${linkable?` data-cat="${catName}"`:''}>${catName}</h2>`;
+    }
+    // Delegated (not per-render) click handler for every .cat-link element,
+    // wherever it appears - same pattern as initTooltips()'s delegation.
+    // Switches tab/subtab and re-renders, exactly like the tabbar/subtabbar's
+    // own click handlers do.
+    function initCategoryLinks(){
+      document.addEventListener('click', e=>{
+        const el = e.target.closest('.cat-link');
+        if(!el) return;
+        const target = CATEGORY_LINK[el.dataset.cat];
+        if(!target) return;
+        const tabs = getTabs();
+        currentTab = target.tab;
+        currentSub = target.sub && tabs[currentTab].subtabs && tabs[currentTab].subtabs[target.sub]
+          ? target.sub
+          : (tabs[currentTab].subtabs ? Object.keys(tabs[currentTab].subtabs)[0] : null);
+        renderAll();
+        window.scrollTo({top:0, behavior:'smooth'});
+      });
     }
 
     function renderTabBar(){
@@ -5879,6 +6031,7 @@ def stage_6_make_shell():
       document.getElementById('btn-view-state').addEventListener('click', ()=>{ window.location.hash = 'state'; });
 
       initTooltips();
+      initCategoryLinks();
       window.addEventListener('hashchange', handleHash);
       handleHash();
     }
