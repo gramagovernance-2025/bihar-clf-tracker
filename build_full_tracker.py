@@ -385,6 +385,43 @@ def stage_1_build_clf_data():
         demand_q['demand_per_member'] = demand_q['newLoanDemand'] / demand_q['n_members']
         demand_pop_by_q[_label] = demand_q
 
+    # ---- Cumulative peer population: the same real quarters as above, but
+    # summed per CLF first (restricted to exactly the QUARTERS window - the
+    # same reliable-quarters convention used everywhere else in this file),
+    # then the same ratio math applied to the SUMMED figures - not an average
+    # of the per-quarter ratios. F03 keeps the same `Total Receipts > 0`
+    # real-row filter each individual quarter already uses; F05 has no such
+    # filter today, so none is added here either, for consistency. ----
+    _qkeys = set(f"{fy}||{q}" for fy, q, _ in QUARTERS)
+
+    f03_win = f03_raw.copy()
+    f03_win['_qkey'] = f03_win['financial_year'].astype(str) + '||' + f03_win['quarter'].astype(str)
+    f03_win = f03_win[f03_win['_qkey'].isin(_qkeys) & (f03_win['Total Receipts'] > 0)]
+    f03_win = f03_win.rename(columns={'district_name': 'district'})
+    f03_cum = f03_win.groupby(['CLF Name', 'district'], as_index=False).agg(
+        _receipts_sum=('Total Receipts', 'sum'), _interest_sum=('Interest Received From CBOs', 'sum'),
+        _opening=('Opening Balance (₹)', 'first'), _closing=('Closing Balance (₹)', 'last'))
+    f03_cum['interest_income_share'] = f03_cum['_interest_sum'] / f03_cum['_receipts_sum'] * 100
+    f03_cum['net_cash_flow'] = f03_cum['_closing'] - f03_cum['_opening']
+    f03_m_by_q['Cumulative'] = f03_cum
+
+    f05_win = f05_raw.copy()
+    f05_win['_qkey'] = f05_win['financial_year'].astype(str) + '||' + f05_win['quarter'].astype(str)
+    f05_win = f05_win[f05_win['_qkey'].isin(_qkeys)]
+    f05_win = f05_win.rename(columns={'district_name': 'district'})
+    f05_cum = f05_win.groupby(['CLF Name', 'district'], as_index=False).agg(
+        _demand_sum=('newLoanDemand', 'sum'), _disb_sum=('New Loan Disbursed', 'sum'))
+    f05_cum['this_qtr_disb_rate'] = f05_cum.apply(lambda r: r['_disb_sum'] / r['_demand_sum'] * 100 if r['_demand_sum'] > 0 else np.nan, axis=1)
+    f05_m_by_q['Cumulative'] = f05_cum
+
+    demand_win = xwalk_master.merge(
+        f05_win[['CLF Name', 'district', 'newLoanDemand']],
+        left_on=['f05_raw_name', 'district'], right_on=['CLF Name', 'district'], how='inner')
+    demand_win = demand_win[demand_win['n_members'] > 0].copy()
+    demand_cum = demand_win.groupby(['mis_id', 'district', 'n_members'], as_index=False)['newLoanDemand'].sum()
+    demand_cum['demand_per_member'] = demand_cum['newLoanDemand'] / demand_cum['n_members']
+    demand_pop_by_q['Cumulative'] = demand_cum
+
     def inclusive_pctl_val(series, value):
         s = series.dropna()
         return round((s <= value).mean() * 100) if pd.notna(value) and len(s) else None
@@ -442,6 +479,7 @@ def stage_1_build_clf_data():
     # by a lightweight first pass (section 6b, below the per-CLF function) before
     # the real per-CLF loop runs. None here just means "not built yet".
     RANK_LOOKUP = {label: None for _, _, label in QUARTERS}
+    RANK_LOOKUP['Cumulative'] = None
 
     print(f"[{elapsed()}] One-time setup complete.")
 
@@ -812,6 +850,83 @@ def stage_1_build_clf_data():
                 "is_real": bool(total_receipts > 0 or total_payments > 0 or cum_disb > 0),
             })
 
+        # ---- Cumulative: an all-time aggregate across every real quarter, so a
+        # viewer gets one overall snapshot instead of picking a single period.
+        # Appended LAST and left as the default-selected entry (finQtrIdx resets
+        # to quarters.length-1 in the JS) - this also means isCurrentSnapshot
+        # (also finQtrIdx===quarters.length-1) now correctly pairs Cumulative
+        # with the F01 balance sheet, which was never quarter-specific anyway.
+        # Field-by-field treatment, not a blanket sum:
+        #   - flow fields (receipts/payments/demand/disbursement) are SUMMED
+        #     across quarters.
+        #   - stock fields (opening balance, cum_disbursed/cum_requested - these
+        #     are already-cumulative-since-inception per LokOS's own F05 columns,
+        #     summing them across quarters would overcount) take the earliest or
+        #     latest real quarter's value, whichever is the correct "as of" point.
+        #   - ratios are recomputed from the summed numerator/denominator, never
+        #     summed or averaged directly.
+        #   - n_requesting/pct_vos_requesting: F05 is CLF-level pre-aggregated
+        #     data (no VO-row identity), so a VO requesting in multiple quarters
+        #     can't be de-duplicated - summed here as a known upper-bound
+        #     approximation (same tier of documented imprecision as other
+        #     known data-quality caveats in this pipeline), not a true unique
+        #     count. Flagged, not fixed - matches how similar limitations are
+        #     already handled elsewhere in this file.
+        real_qs = [qtr for qtr in quarterly if qtr["is_real"]]
+        if real_qs:
+            first_q, last_q = real_qs[0], real_qs[-1]
+            cum_total_receipts = sum(qtr["total_receipts"] for qtr in quarterly)
+            cum_total_payments = sum(qtr["total_payments"] for qtr in quarterly)
+            cum_new_demand = sum(qtr["new_demand_amt"] for qtr in quarterly)
+            cum_qtr_pending = sum(qtr["qtr_pending"] for qtr in quarterly)
+            cum_new_disb = cum_new_demand - cum_qtr_pending
+
+            def _sum_sub(key, stock_field):
+                out = {}
+                for qtr in quarterly:
+                    d = qtr[key]
+                    if not d:
+                        continue
+                    for k, v in d.items():
+                        if k == stock_field:
+                            continue
+                        out[k] = out.get(k, 0) + v
+                return out
+
+            cum_receipts_full = _sum_sub("receipts_full", "Opening Balance")
+            cum_receipts_full["Opening Balance"] = first_q["opening_balance"]
+            cum_receipts_full["Total Receipts"] = cum_total_receipts
+            cum_payments_full = _sum_sub("payments_full", "Closing Balance")
+            cum_payments_full["Closing Balance"] = last_q["closing_balance"]
+            cum_payments_full["Total Payments"] = cum_total_payments
+
+            cum_expenses = cum_payments_full.get("Group Expense", 0) + cum_payments_full.get("Bank Expense", 0)
+            cum_interest_income = cum_receipts_full.get("Interest Received From CBOs", 0)
+            cum_n_requesting = sum(qtr["n_requesting"] for qtr in quarterly)
+
+            quarterly.append({
+                "label": "Cumulative",
+                "opening_balance": first_q["opening_balance"],
+                "total_receipts": cum_total_receipts, "total_payments": cum_total_payments,
+                "closing_balance": last_q["closing_balance"],
+                "net_cash_flow": last_q["closing_balance"] - first_q["opening_balance"],
+                "receipts_full": cum_receipts_full, "payments_full": cum_payments_full,
+                "operating_expense_ratio": round(cum_expenses / cum_total_receipts * 100, 1) if cum_total_receipts else None,
+                "interest_income_share": round(cum_interest_income / cum_total_receipts * 100, 1) if cum_total_receipts else None,
+                "pct_disbursed": round(last_q["cum_disbursed"] / last_q["cum_requested"] * 100, 1) if last_q["cum_requested"] else None,
+                "amount_pending": last_q["amount_pending"],
+                "new_demand_amt": cum_new_demand,
+                "qtr_pending": cum_qtr_pending,
+                "this_qtr_disb_rate": round(cum_new_disb / cum_new_demand * 100, 1) if cum_new_demand else None,
+                "capacity_ratio": last_q["capacity_ratio"],
+                "avail_balance": last_q["avail_balance"],
+                "n_requesting": cum_n_requesting, "pct_vos_requesting": round(cum_n_requesting / n_vo * 100, 1) if n_vo else None,
+                "cum_disbursed": last_q["cum_disbursed"], "cum_requested": last_q["cum_requested"],
+                "is_real": True,
+            })
+        else:
+            quarterly.append({**quarterly[-1], "label": "Cumulative"})
+
         financial = {"f01": f01_data, "quarters": quarterly, "n_vo": int(n_vo)}
 
         # ========================================================================
@@ -943,7 +1058,15 @@ def stage_1_build_clf_data():
         # `DATA.scoring.by_quarter[label]` object without special-casing which
         # metrics happen to be static this time.
         scoring_by_quarter = {}
-        for _qi, (_fy, _q, _label) in enumerate(QUARTERS):
+        # Cumulative appended as one extra pseudo-period after the real
+        # QUARTERS - the loop body below only ever uses _qi/_label (to index
+        # `quarterly` and look up the *_by_q/RANK_LOOKUP populations built
+        # above), never _fy/_q directly, so this generalizes with no other
+        # changes: quarterly[len(QUARTERS)] is the Cumulative entry appended
+        # in section 4 above, and every *_by_q population above has a
+        # 'Cumulative' key alongside the real quarter labels.
+        _PERIODS = list(enumerate(lbl for _, _, lbl in QUARTERS)) + [(len(QUARTERS), 'Cumulative')]
+        for _qi, _label in _PERIODS:
             q_data = quarterly[_qi]
             demand_per_member_q = q_data['new_demand_amt'] / overview['n_members'] if overview['n_members'] > 0 else None
             fund_util_metrics = [
@@ -1000,7 +1123,7 @@ def stage_1_build_clf_data():
                 _cat_dict['n_state'] = cr['n_state'] if cr else None
                 _cat_dict['n_district'] = cr['n_district'] if cr else None
 
-        scoring = {"quarters": [lbl for _, _, lbl in QUARTERS], "default_idx": len(QUARTERS) - 1, "by_quarter": scoring_by_quarter}
+        scoring = {"quarters": [lbl for _, _, lbl in QUARTERS] + ['Cumulative'], "default_idx": len(QUARTERS), "by_quarter": scoring_by_quarter}
 
         return {
             "overview": overview, "audit": audit, "vrf": vrf_data,
@@ -1049,7 +1172,7 @@ def stage_1_build_clf_data():
             out[int(mis)] = {"state_rank": int(r), "district_rank": int(dr), "n_state": n_state, "n_district": int(dn)}
         return out
 
-    for _fy, _q, _label in QUARTERS:
+    for _label in [lbl for _, _, lbl in QUARTERS] + ['Cumulative']:
         overall_rows = [(mis, v['district'], v['by_quarter'][_label]['overall_score']) for mis, v in _score_cache.items()
                          if v['by_quarter'][_label]['overall_score'] is not None]
         overall_pop = pd.DataFrame(overall_rows, columns=['mis_id', 'district', 'value'])
@@ -1403,6 +1526,25 @@ def stage_2_build_vprp_vo_data():
             yr_data["by_gp"] = by_gp
             yr_data["gp_list"] = sorted(tc(g) for g in all_gps)
             years_out[str(yr)] = yr_data
+
+        # ---- Cumulative: same build_yr_data() re-aggregation logic, fed the
+        # FULL union of every year's raw rows - not a sum of the per-year top-N
+        # lists above, which would be lossy (a long-tail scheme/item that's
+        # never top-6 in any single year could still be cumulatively
+        # significant, and n_vo_requesting_*/n_departments are nunique() counts
+        # that a naive per-year sum would double-count across years for a VO/
+        # department that shows up more than once). This stage_2 pass is what
+        # overwrites stage_1's simpler yearly loop and survives into the final
+        # JSON, so Cumulative only needs to be added here. ----
+        cum_data = build_yr_data(ent, pgsrd, sdp)
+        cum_all_gps = set(ent["gp_name"].dropna().unique()) | set(pgsrd["gp_name"].dropna().unique()) | set(sdp["gp_name"].dropna().unique())
+        cum_by_gp = {}
+        for gp in sorted(cum_all_gps):
+            cum_by_gp[tc(gp)] = build_yr_data(ent[ent["gp_name"] == gp], pgsrd[pgsrd["gp_name"] == gp], sdp[sdp["gp_name"] == gp])
+        cum_data["by_gp"] = cum_by_gp
+        cum_data["gp_list"] = sorted(tc(g) for g in cum_all_gps)
+        years_out["Cumulative"] = cum_data
+
         vprp_extra[mis_id] = {"years": years_out}
         n_done += 1
         if n_done % 200 == 0:
@@ -2479,6 +2621,28 @@ def stage_4_build_loan_scoring():
     print(f"[{elapsed()}] Writing updated CLF json...")
     for mis, d in clfs.items():
         (CLF_DIR / f"{mis}.json").write_text(json.dumps(d, ensure_ascii=False))
+
+    # ---- Rebuild scoring_summary.json here, not in stage_1: stage_1 wrote it
+    # BEFORE this function renamed "Fund Utilization & Loan Activity" ->
+    # "Fund Utilization" and added Loan Portfolio/Audit Score/Data Coverage, so
+    # the stage_1 version only ever had the original 5 (pre-rename) category
+    # keys - silently starving the weight-picker's peer-ranking comparison of
+    # 4 of 8 categories for every CLF except whichever one is currently being
+    # viewed (whose own score comes fresh from DATA.scoring, not this file).
+    # Rebuilding from the now-final `clfs` dict fixes this and picks up
+    # 'Cumulative' automatically, since by_quarter already has that key. ----
+    print(f"[{elapsed()}] Rebuilding scoring_summary.json (post-rename/category-injection)...")
+    summary_rows = [
+        {"id": mis, "district": d["overview"]["district"],
+         "by_quarter": {q: {cat: v["score"] for cat, v in bq["categories"].items()}
+                        for q, bq in d["scoring"]["by_quarter"].items()}}
+        for mis, d in clfs.items()
+    ]
+    _any_clf = next(iter(clfs.values()))
+    scoring_summary = {"quarters": _any_clf["scoring"]["quarters"], "clfs": summary_rows}
+    with open(CLF_DIR.parent / "scoring_summary.json", "w") as f:
+        json.dump(scoring_summary, f)
+    print(f"[{elapsed()}] Wrote scoring_summary.json ({len(summary_rows)} CLFs)")
     print(f"[{elapsed()}] Done.")
 
 
@@ -2587,10 +2751,13 @@ def stage_5_build_district_state():
         BY_DISTRICT.setdefault(c["overview"]["district"], []).append(c)
     print(f"[{elapsed()}] Grouped into {len(BY_DISTRICT)} districts")
 
-    LATEST_Q = ALL_CLFS[0]["scoring"]["quarters"][-1]
+    # Every real quarter plus 'Cumulative' (appended last by build_clf_data) -
+    # District/State scoring is now computed per-period, same as CLF scope,
+    # rather than pinned to a single latest-quarter snapshot.
+    ALL_PERIODS = ALL_CLFS[0]["scoring"]["quarters"]
 
-    def cat_scores_for(c):
-        bq = c["scoring"]["by_quarter"][LATEST_Q]
+    def cat_scores_for(c, period):
+        bq = c["scoring"]["by_quarter"][period]
         return {cat: bq["categories"][cat]["score"] for cat in CATS}
 
     # ============================================================================
@@ -2985,7 +3152,13 @@ def stage_5_build_district_state():
         # CLF's own vprp.years[yr] so the shell's renderVprpEnt/Pgsrd/Sdp run
         # UNCHANGED against it via the pseudo-CLF wrapper. ----
         vprp_years_agg = {}
-        for yr in [2023, 2024, 2025]:
+        # "Cumulative" appended here works with zero other changes below: this
+        # whole block aggregates ACROSS CLFS for one period label at a time
+        # (never across years within a CLF), and every CLF's own vprp.years
+        # dict already has a ready-made "Cumulative" entry (built by
+        # build_yr_data() the same way every real year is) for this loop to
+        # pick up via c["vprp"]["years"].get(yr_key, {}).
+        for yr in [2023, 2024, 2025, "Cumulative"]:
             yr_key = str(yr)
             total_requesting = sum(c["vprp"]["years"].get(yr_key, {}).get("n_demands", 0) for c in CLFS)
             accessed_est = sum(
@@ -3111,167 +3284,183 @@ def stage_5_build_district_state():
                 "n_departments": len(departments_agg) or None,
             }
 
-        # ---- Scoring: Overall = avg of each CLF's own Overall Score (equal
-        # weight per CLF); category scores + individual metrics (avg state
-        # percentile) likewise averaged, never summed. Real cross-district ranks
-        # for overall/category/metric are filled in by rank_districts() below -
-        # left None here (state has none - it's the top level). ----
-        overall_scores = [c["scoring"]["by_quarter"][LATEST_Q]["overall_score"] for c in CLFS]
-        valid_overall = [s for s in overall_scores if s is not None]
-        cat_score_avgs = {}
-        for cat in CATS:
-            vals = [cat_scores_for(c)[cat] for c in CLFS if cat_scores_for(c)[cat] is not None]
-            cat_score_avgs[cat] = round(sum(vals) / len(vals)) if vals else None
+        # ---- Scoring: computed once per period (every real quarter plus
+        # Cumulative), producing a by_quarter dict shaped exactly like a CLF's
+        # own scoring.by_quarter, so the JS can reuse the same pattern at group
+        # scope. Only a handful of individual metrics genuinely vary by period
+        # (Interest Income Share, This Quarter's Disbursement Rate, Loan Amount
+        # Demanded This Quarter, Net Cash Flow - all F03/F05-derived); the rest
+        # (VRF, Governance, Welfare, Loan Portfolio, Audit Score, Data Coverage,
+        # plus Fund Deployment/Surplus-Deficit/Bookkeeping Accuracy) recompute
+        # to the same value every pass, matching the CLF-level convention -
+        # deliberately not special-cased out of the loop, since re-averaging an
+        # already-in-memory CLF list per period is cheap (this pipeline's real
+        # cost is stage_1's per-CLF work, not this aggregation step). Overall =
+        # avg of each CLF's own Overall Score for that period (equal weight per
+        # CLF); category scores + individual metrics (avg state percentile)
+        # likewise averaged, never summed. Real cross-district ranks for
+        # overall/category/metric are filled in per period by the ranking pass
+        # below - left None here (state has none - it's the top level). ----
+        scoring_by_quarter = {}
+        for _qi, _period_label in enumerate(ALL_PERIODS):
+            overall_scores = [c["scoring"]["by_quarter"][_period_label]["overall_score"] for c in CLFS]
+            valid_overall = [s for s in overall_scores if s is not None]
+            cat_score_avgs = {}
+            for cat in CATS:
+                vals = [cat_scores_for(c, _period_label)[cat] for c in CLFS if cat_scores_for(c, _period_label)[cat] is not None]
+                cat_score_avgs[cat] = round(sum(vals) / len(vals)) if vals else None
 
-        category_metrics_agg = {}
-        for cat in CATS:
-            metric_vals, metric_order = {}, []
+            category_metrics_agg = {}
+            for cat in CATS:
+                metric_vals, metric_order = {}, []
+                for c in CLFS:
+                    cat_obj = c["scoring"]["by_quarter"][_period_label]["categories"].get(cat)
+                    if not cat_obj:
+                        continue
+                    for label, m in cat_obj.get("metrics", []):
+                        if label not in metric_vals:
+                            metric_vals[label] = []
+                            metric_order.append(label)
+                        if m and m.get("state_pctl") is not None:
+                            metric_vals[label].append(m["state_pctl"])
+                category_metrics_agg[cat] = [
+                    {"label": label, "avg_state_pctl": round(sum(metric_vals[label]) / len(metric_vals[label])) if metric_vals[label] else None,
+                     "rank": None, "n": None, "raw_value": None, "raw_fmt": None, "raw_descriptor": None}
+                    for label in metric_order
+                ]
+
+            # ---- Raw average value per metric, for the state-level "By Category"
+            # display: averaging a percentile against its OWN reference population is
+            # close to a mathematical tautology at state scope (it converges to ~50
+            # regardless of the underlying data, since percentiles are by
+            # construction spread ~uniformly 0-100 across whatever population
+            # produced them) - confirmed empirically, most state-level avg_state_pctl
+            # values above landed within 1-2 points of 50. The raw average sidesteps
+            # that; each metric mapped to the EXACT source column
+            # build_tracker_data.py itself scores that metric from (see score_metric/
+            # score_from_pop calls, ~line 807-819 there). A few metrics
+            # (Platform Approval Status, Insurance Coverage, Aadhaar KYC Coverage)
+            # live only in a raw member-level population inside build_tracker_data.py
+            # that never gets surfaced into the per-CLF JSON - raw_value stays None
+            # for those; the UI falls back to the best/worst-district callout alone.
+            def _member_weighted_vrf_metric(label):
+                pairs = []
+                for c in vrf_found_clfs:
+                    m = next((mm for mm in c["vrf"]["metrics"] if mm["label"] == label), None)
+                    if m and m.get("value") is not None:
+                        pairs.append((m["value"], c["overview"]["n_members"]))
+                return wavg(pairs)
+
+            period_fin = financial_agg["quarters"][_qi] if _qi < len(financial_agg["quarters"]) else None
+            avg_subcom_filled = wavg([(sum(1 for v in c["overview"]["subcom"].values() if v and v > 0), 1) for c in CLFS])
+            n_subcom_total = len(CLFS[0]["overview"]["subcom"]) if CLFS and CLFS[0]["overview"].get("subcom") else 6
+            spa_counts = [sum(1 for v in c["overview"]["spa"].values() if v) for c in CLFS if c["overview"].get("spa_found")]
+            avg_spa_engaged = round(sum(spa_counts) / len(spa_counts), 1) if spa_counts else None
+            n_spa_total = len(CLFS[0]["overview"]["spa"]) if CLFS and CLFS[0]["overview"].get("spa_found") else 7
+            cadre_div_vals = [c["overview"].get("n_distinct_cadre_types") for c in CLFS if c["overview"].get("n_distinct_cadre_types") is not None]
+            avg_cadre_diversity = round(sum(cadre_div_vals) / len(cadre_div_vals), 1) if cadre_div_vals else None
+            # CLF Status / Platform Approval Status are %-of-CLFs measures (each CLF
+            # either is or isn't Model & Registered / platform-approved); Insurance
+            # and Aadhaar Coverage are %-of-MEMBERS measures (member-weighted, same
+            # convention as pct_active) - kept explicit in each metric's descriptor
+            # below rather than left as a bare, ambiguous percentage.
+            pct_model_registered = round(sum(1 for c in CLFS if c["overview"]["status_tier_found"] and c["overview"]["status_tier"] == "Model & Registered") / n_clfs * 100, 1) if n_clfs else None
+            pct_platform_approved = round(sum(1 for c in CLFS if c["overview"].get("approval_status") == "Approved by BM") / n_clfs * 100, 1) if n_clfs else None
+            pct_insurance = wavg([(c["overview"].get("pct_insurance"), c["overview"]["n_members"]) for c in CLFS])
+            pct_aadhaar = wavg([(c["overview"].get("pct_aadhaar"), c["overview"]["n_members"]) for c in CLFS])
+            demand_per_member = round(period_fin["new_demand_amt"] / n_members, 1) if (period_fin and n_members) else None
+            bookkeeping_accuracy = round(100 - abs(f01_agg["balance_gap_rs"] / f01_agg["total_assets"] * 100), 1) if f01_agg["total_assets"] else None
+            audit_scores = [c["audit"]["total_score"] for c in CLFS if c["audit"].get("found") and c["audit"].get("total_score") is not None]
+            avg_audit_score = round(sum(audit_scores) / len(audit_scores), 1) if audit_scores else None
+
+            # (value, format_code, short descriptor appended after the formatted
+            # number - e.g. "80.6% fund deployment ratio", "42.3% of CLFs are Model
+            # & Registered"). Empty descriptor means the format code is already
+            # self-explanatory (e.g. "2.2 of 6" for Subcommittee Completeness).
+            METRIC_RAW = {
+                ("Fund Utilization", "Fund Deployment"): (f01_agg["deployment_ratio"], "pct", "fund deployment ratio"),
+                ("Fund Utilization", "Interest Income Share"): (period_fin["interest_income_share"] if period_fin else None, "pct", "of receipts"),
+                ("Fund Utilization", "This Quarter's Disbursement Rate"): (period_fin["this_qtr_disb_rate"] if period_fin else None, "pct", "of loan demand disbursed"),
+                ("Fund Utilization", "Loan Amount Demanded This Quarter"): (demand_per_member, "rs_per_member", ""),
+                ("Loan Portfolio", "Repayment Rate"): (loans_agg["kpi"]["repayment_rate"], "pct", "repaid of disbursed"),
+                ("Loan Portfolio", "Active Lending Turnover"): (loans_agg["kpi"]["active_lending_turnover"], "multiplier", "of corpus recycled"),
+                ("Loan Portfolio", "Arrears Rate"): (
+                    round(100 * loans_agg["kpi"]["total_arrears"] / total_current_demand_l, 1) if total_current_demand_l else None,
+                    "pct", "of current demand overdue"),
+                ("Loan Portfolio", "Total XIRR"): (loans_agg["kpi"]["total_xirr"], "pct_signed", "annualized"),
+                ("Audit Score", "Total Audit Score"): (avg_audit_score, "of_100", "average audit score"),
+                ("Data Coverage", "Data Sources Available"): (
+                    (sum(c["data_availability"]["n_available"] for c in CLFS) / n_clfs) if n_clfs else None,
+                    "of_11", ""),
+                ("Financial Health", "Surplus / Deficit"): (f01_agg["surplus_pct"], "pct_signed", "of assets"),
+                ("Financial Health", "Net Cash Flow"): (period_fin["net_cash_flow"] if period_fin else None, "rs", ""),
+                ("Financial Health", "Bookkeeping Accuracy"): (bookkeeping_accuracy, "pct", "accuracy"),
+                ("VRF Fund Health", "Savings Discipline"): (_member_weighted_vrf_metric("Savings Discipline"), "pct", "of promised savings collected"),
+                ("VRF Fund Health", "Savings Realisation"): (_member_weighted_vrf_metric("Savings Realisation"), "multiplier", ""),
+                ("VRF Fund Health", "Corpus Multiplier"): (_member_weighted_vrf_metric("Corpus Multiplier"), "multiplier", ""),
+                ("VRF Fund Health", "Interest Yield"): (_member_weighted_vrf_metric("Interest Yield"), "pct_of_1", "yield"),
+                ("VRF Fund Health", "Coverage Completion"): (_member_weighted_vrf_metric("Coverage Completion"), "pct_of_1", "of VOs have full coverage"),
+                ("Governance & Compliance", "CLF Status"): (pct_model_registered, "pct", "of CLFs are Model & Registered"),
+                ("Governance & Compliance", "Platform Approval Status"): (pct_platform_approved, "pct", "of CLFs are platform-approved"),
+                ("Governance & Compliance", "Subcommittee Completeness"): (avg_subcom_filled, f"of_{n_subcom_total}", ""),
+                ("Governance & Compliance", "Active Membership"): (overview_agg["pct_active"], "pct", "of members are active"),
+                ("Governance & Compliance", "Cadre Diversity"): (avg_cadre_diversity, "types", ""),
+                ("Welfare and Livelihood", "Insurance Coverage"): (pct_insurance, "pct", "of members have insurance"),
+                ("Welfare and Livelihood", "Aadhaar KYC Coverage"): (pct_aadhaar, "pct", "of members Aadhaar KYC verified"),
+                ("Welfare and Livelihood", "Livelihoods Diversification"): (overview_agg["pct_multi_livelihood"], "pct", "of members have multiple livelihoods"),
+                ("Welfare and Livelihood", "Special Project Activities"): (avg_spa_engaged, f"of_{n_spa_total}", ""),
+            }
+            for cat in CATS:
+                for m in category_metrics_agg[cat]:
+                    raw = METRIC_RAW.get((cat, m["label"]))
+                    if raw:
+                        m["raw_value"], m["raw_fmt"], m["raw_descriptor"] = raw
+
+            clf_rankings_full = []
             for c in CLFS:
-                cat_obj = c["scoring"]["by_quarter"][LATEST_Q]["categories"].get(cat)
-                if not cat_obj:
-                    continue
-                for label, m in cat_obj.get("metrics", []):
-                    if label not in metric_vals:
-                        metric_vals[label] = []
-                        metric_order.append(label)
-                    if m and m.get("state_pctl") is not None:
-                        metric_vals[label].append(m["state_pctl"])
-            category_metrics_agg[cat] = [
-                {"label": label, "avg_state_pctl": round(sum(metric_vals[label]) / len(metric_vals[label])) if metric_vals[label] else None,
-                 "rank": None, "n": None, "raw_value": None, "raw_fmt": None, "raw_descriptor": None}
-                for label in metric_order
-            ]
+                bq = c["scoring"]["by_quarter"][_period_label]
+                clf_rankings_full.append({
+                    "mis_id": c["overview"]["mis_id"], "name": c["overview"]["clf_name_lokos"].title(),
+                    "block": c["overview"]["block"], "district": c["overview"]["district"],
+                    "categories": cat_scores_for(c, _period_label),
+                    "overall_score": bq["overall_score"], "district_rank": bq.get("overall_district_rank"),
+                    "n_district": bq.get("overall_n_district"),
+                    "state_rank": bq.get("overall_state_rank"), "n_state": bq.get("overall_n_state"),
+                })
 
-        # ---- Raw average value per metric, for the state-level "By Category"
-        # display: averaging a percentile against its OWN reference population is
-        # close to a mathematical tautology at state scope (it converges to ~50
-        # regardless of the underlying data, since percentiles are by
-        # construction spread ~uniformly 0-100 across whatever population
-        # produced them) - confirmed empirically, most state-level avg_state_pctl
-        # values above landed within 1-2 points of 50. The raw average sidesteps
-        # that; each metric mapped to the EXACT source column
-        # build_tracker_data.py itself scores that metric from (see score_metric/
-        # score_from_pop calls, ~line 807-819 there). A few metrics
-        # (Platform Approval Status, Insurance Coverage, Aadhaar KYC Coverage)
-        # live only in a raw member-level population inside build_tracker_data.py
-        # that never gets surfaced into the per-CLF JSON - raw_value stays None
-        # for those; the UI falls back to the best/worst-district callout alone.
-        def _member_weighted_vrf_metric(label):
-            pairs = []
-            for c in vrf_found_clfs:
-                m = next((mm for mm in c["vrf"]["metrics"] if mm["label"] == label), None)
-                if m and m.get("value") is not None:
-                    pairs.append((m["value"], c["overview"]["n_members"]))
-            return wavg(pairs)
-
-        latest_q_fin = financial_agg["quarters"][-1] if financial_agg["quarters"] else None
-        avg_subcom_filled = wavg([(sum(1 for v in c["overview"]["subcom"].values() if v and v > 0), 1) for c in CLFS])
-        n_subcom_total = len(CLFS[0]["overview"]["subcom"]) if CLFS and CLFS[0]["overview"].get("subcom") else 6
-        spa_counts = [sum(1 for v in c["overview"]["spa"].values() if v) for c in CLFS if c["overview"].get("spa_found")]
-        avg_spa_engaged = round(sum(spa_counts) / len(spa_counts), 1) if spa_counts else None
-        n_spa_total = len(CLFS[0]["overview"]["spa"]) if CLFS and CLFS[0]["overview"].get("spa_found") else 7
-        cadre_div_vals = [c["overview"].get("n_distinct_cadre_types") for c in CLFS if c["overview"].get("n_distinct_cadre_types") is not None]
-        avg_cadre_diversity = round(sum(cadre_div_vals) / len(cadre_div_vals), 1) if cadre_div_vals else None
-        # CLF Status / Platform Approval Status are %-of-CLFs measures (each CLF
-        # either is or isn't Model & Registered / platform-approved); Insurance
-        # and Aadhaar Coverage are %-of-MEMBERS measures (member-weighted, same
-        # convention as pct_active) - kept explicit in each metric's descriptor
-        # below rather than left as a bare, ambiguous percentage.
-        pct_model_registered = round(sum(1 for c in CLFS if c["overview"]["status_tier_found"] and c["overview"]["status_tier"] == "Model & Registered") / n_clfs * 100, 1) if n_clfs else None
-        pct_platform_approved = round(sum(1 for c in CLFS if c["overview"].get("approval_status") == "Approved by BM") / n_clfs * 100, 1) if n_clfs else None
-        pct_insurance = wavg([(c["overview"].get("pct_insurance"), c["overview"]["n_members"]) for c in CLFS])
-        pct_aadhaar = wavg([(c["overview"].get("pct_aadhaar"), c["overview"]["n_members"]) for c in CLFS])
-        demand_per_member = round(latest_q_fin["new_demand_amt"] / n_members, 1) if (latest_q_fin and n_members) else None
-        bookkeeping_accuracy = round(100 - abs(f01_agg["balance_gap_rs"] / f01_agg["total_assets"] * 100), 1) if f01_agg["total_assets"] else None
-        audit_scores = [c["audit"]["total_score"] for c in CLFS if c["audit"].get("found") and c["audit"].get("total_score") is not None]
-        avg_audit_score = round(sum(audit_scores) / len(audit_scores), 1) if audit_scores else None
-
-        # (value, format_code, short descriptor appended after the formatted
-        # number - e.g. "80.6% fund deployment ratio", "42.3% of CLFs are Model
-        # & Registered"). Empty descriptor means the format code is already
-        # self-explanatory (e.g. "2.2 of 6" for Subcommittee Completeness).
-        METRIC_RAW = {
-            ("Fund Utilization", "Fund Deployment"): (f01_agg["deployment_ratio"], "pct", "fund deployment ratio"),
-            ("Fund Utilization", "Interest Income Share"): (latest_q_fin["interest_income_share"] if latest_q_fin else None, "pct", "of receipts"),
-            ("Fund Utilization", "This Quarter's Disbursement Rate"): (latest_q_fin["this_qtr_disb_rate"] if latest_q_fin else None, "pct", "of loan demand disbursed"),
-            ("Fund Utilization", "Loan Amount Demanded This Quarter"): (demand_per_member, "rs_per_member", ""),
-            ("Loan Portfolio", "Repayment Rate"): (loans_agg["kpi"]["repayment_rate"], "pct", "repaid of disbursed"),
-            ("Loan Portfolio", "Active Lending Turnover"): (loans_agg["kpi"]["active_lending_turnover"], "multiplier", "of corpus recycled"),
-            ("Loan Portfolio", "Arrears Rate"): (
-                round(100 * loans_agg["kpi"]["total_arrears"] / total_current_demand_l, 1) if total_current_demand_l else None,
-                "pct", "of current demand overdue"),
-            ("Loan Portfolio", "Total XIRR"): (loans_agg["kpi"]["total_xirr"], "pct_signed", "annualized"),
-            ("Audit Score", "Total Audit Score"): (avg_audit_score, "of_100", "average audit score"),
-            ("Data Coverage", "Data Sources Available"): (
-                (sum(c["data_availability"]["n_available"] for c in CLFS) / n_clfs) if n_clfs else None,
-                "of_11", ""),
-            ("Financial Health", "Surplus / Deficit"): (f01_agg["surplus_pct"], "pct_signed", "of assets"),
-            ("Financial Health", "Net Cash Flow"): (latest_q_fin["net_cash_flow"] if latest_q_fin else None, "rs", ""),
-            ("Financial Health", "Bookkeeping Accuracy"): (bookkeeping_accuracy, "pct", "accuracy"),
-            ("VRF Fund Health", "Savings Discipline"): (_member_weighted_vrf_metric("Savings Discipline"), "pct", "of promised savings collected"),
-            ("VRF Fund Health", "Savings Realisation"): (_member_weighted_vrf_metric("Savings Realisation"), "multiplier", ""),
-            ("VRF Fund Health", "Corpus Multiplier"): (_member_weighted_vrf_metric("Corpus Multiplier"), "multiplier", ""),
-            ("VRF Fund Health", "Interest Yield"): (_member_weighted_vrf_metric("Interest Yield"), "pct_of_1", "yield"),
-            ("VRF Fund Health", "Coverage Completion"): (_member_weighted_vrf_metric("Coverage Completion"), "pct_of_1", "of VOs have full coverage"),
-            ("Governance & Compliance", "CLF Status"): (pct_model_registered, "pct", "of CLFs are Model & Registered"),
-            ("Governance & Compliance", "Platform Approval Status"): (pct_platform_approved, "pct", "of CLFs are platform-approved"),
-            ("Governance & Compliance", "Subcommittee Completeness"): (avg_subcom_filled, f"of_{n_subcom_total}", ""),
-            ("Governance & Compliance", "Active Membership"): (overview_agg["pct_active"], "pct", "of members are active"),
-            ("Governance & Compliance", "Cadre Diversity"): (avg_cadre_diversity, "types", ""),
-            ("Welfare and Livelihood", "Insurance Coverage"): (pct_insurance, "pct", "of members have insurance"),
-            ("Welfare and Livelihood", "Aadhaar KYC Coverage"): (pct_aadhaar, "pct", "of members Aadhaar KYC verified"),
-            ("Welfare and Livelihood", "Livelihoods Diversification"): (overview_agg["pct_multi_livelihood"], "pct", "of members have multiple livelihoods"),
-            ("Welfare and Livelihood", "Special Project Activities"): (avg_spa_engaged, f"of_{n_spa_total}", ""),
-        }
-        for cat in CATS:
-            for m in category_metrics_agg[cat]:
-                raw = METRIC_RAW.get((cat, m["label"]))
-                if raw:
-                    m["raw_value"], m["raw_fmt"], m["raw_descriptor"] = raw
-
-        clf_rankings_full = []
-        for c in CLFS:
-            bq = c["scoring"]["by_quarter"][LATEST_Q]
-            clf_rankings_full.append({
-                "mis_id": c["overview"]["mis_id"], "name": c["overview"]["clf_name_lokos"].title(),
-                "block": c["overview"]["block"], "district": c["overview"]["district"],
-                "categories": cat_scores_for(c),
-                "overall_score": bq["overall_score"], "district_rank": bq.get("overall_district_rank"),
-                "n_district": bq.get("overall_n_district"),
-                "state_rank": bq.get("overall_state_rank"), "n_state": bq.get("overall_n_state"),
-            })
-
-        if clf_ranking_mode == "top_bottom_20":
-            # "tier" is a fixed property of each row (top-20 vs bottom-20 by
-            # overall state rank), stamped once here - NOT re-derived from
-            # wherever a row happens to be sitting after the table gets sorted by
-            # a different column in the browser, which would make the colour
-            # meaningless (a bottom-20 CLF with one strong sub-score could sort
-            # near the top of the visible list and wrongly render green).
-            scored = [r for r in clf_rankings_full if r["overall_score"] is not None]
-            scored.sort(key=lambda r: (r["state_rank"] is None, r["state_rank"]))
-            if len(scored) > 40:
-                top20, bottom20 = scored[:20], scored[-20:]
+            if clf_ranking_mode == "top_bottom_20":
+                # "tier" is a fixed property of each row (top-20 vs bottom-20 by
+                # overall state rank), stamped once here - NOT re-derived from
+                # wherever a row happens to be sitting after the table gets sorted by
+                # a different column in the browser, which would make the colour
+                # meaningless (a bottom-20 CLF with one strong sub-score could sort
+                # near the top of the visible list and wrongly render green).
+                scored = [r for r in clf_rankings_full if r["overall_score"] is not None]
+                scored.sort(key=lambda r: (r["state_rank"] is None, r["state_rank"]))
+                if len(scored) > 40:
+                    top20, bottom20 = scored[:20], scored[-20:]
+                else:
+                    top20, bottom20 = scored, []
+                for r in top20:
+                    r["tier"] = "top"
+                for r in bottom20:
+                    r["tier"] = "bottom"
+                clf_rankings = top20 + bottom20
             else:
-                top20, bottom20 = scored, []
-            for r in top20:
-                r["tier"] = "top"
-            for r in bottom20:
-                r["tier"] = "bottom"
-            clf_rankings = top20 + bottom20
-        else:
-            clf_rankings_full.sort(key=lambda r: (r["district_rank"] is None, r["district_rank"]))
-            clf_rankings = clf_rankings_full
+                clf_rankings_full.sort(key=lambda r: (r["district_rank"] is None, r["district_rank"]))
+                clf_rankings = clf_rankings_full
 
-        scoring_agg = {
-            "overall_score": round(sum(valid_overall) / len(valid_overall)) if valid_overall else None,
-            "n_clfs_scored": len(valid_overall), "n_total": n_clfs,
-            "category_scores": cat_score_avgs,
-            "category_metrics": category_metrics_agg,
-            "clf_rankings": clf_rankings, "clf_ranking_mode": clf_ranking_mode,
-            "overall_state_rank": None, "n_districts": None,
-            "category_ranks": {cat: {"rank": None, "n": None} for cat in CATS},
-        }
+            scoring_by_quarter[_period_label] = {
+                "overall_score": round(sum(valid_overall) / len(valid_overall)) if valid_overall else None,
+                "n_clfs_scored": len(valid_overall), "n_total": n_clfs,
+                "category_scores": cat_score_avgs,
+                "category_metrics": category_metrics_agg,
+                "clf_rankings": clf_rankings, "clf_ranking_mode": clf_ranking_mode,
+                "overall_state_rank": None, "n_districts": None,
+                "category_ranks": {cat: {"rank": None, "n": None} for cat in CATS},
+            }
+
+        scoring = {"quarters": ALL_PERIODS, "default_idx": len(ALL_PERIODS) - 1, "by_quarter": scoring_by_quarter}
 
         pseudo_clf = {
             "financial": financial_agg, "vrf": vrf_agg, "vprp": {"years": vprp_years_agg},
@@ -3283,7 +3472,7 @@ def stage_5_build_district_state():
             "financial": financial_agg, "vrf": vrf_agg, "vprp": {"years": vprp_years_agg},
             "loans": loans_agg, "fund_disbursement": fund_disbursement_agg,
             "data_availability": data_availability_agg,
-            "scoring": scoring_agg, "pseudo_clf": pseudo_clf,
+            "scoring": scoring, "pseudo_clf": pseudo_clf,
         }
 
     # ============================================================================
@@ -3299,64 +3488,76 @@ def stage_5_build_district_state():
 
     print(f"[{elapsed()}] Ranking districts against each other...")
     audit_ranks, n_audit = rank_simple({d: a["audit"]["avg_score"] for d, a in district_aggs.items()})
-    overall_ranks, n_overall = rank_simple({d: a["scoring"]["overall_score"] for d, a in district_aggs.items()})
-    cat_ranks = {}
-    for cat in CATS:
-        cat_ranks[cat] = rank_simple({d: a["scoring"]["category_scores"][cat] for d, a in district_aggs.items()})
 
-    metric_labels_by_cat = {cat: [m["label"] for m in next(iter(district_aggs.values()))["scoring"]["category_metrics"][cat]] for cat in CATS}
-    metric_ranks = {}
-    for cat in CATS:
-        for label in metric_labels_by_cat[cat]:
-            pop = {}
-            for d, a in district_aggs.items():
-                m = next((mm for mm in a["scoring"]["category_metrics"][cat] if mm["label"] == label), None)
-                pop[d] = m["avg_state_pctl"] if m else None
-            metric_ranks[(cat, label)] = rank_simple(pop)
+    # Scoring ranks are computed once PER PERIOD now (every real quarter plus
+    # Cumulative), not just for a single latest-quarter snapshot - mirrors why
+    # district/state scoring itself became per-period in aggregate_group above.
+    metric_labels_by_cat = {cat: [m["label"] for m in next(iter(district_aggs.values()))["scoring"]["by_quarter"][ALL_PERIODS[0]]["category_metrics"][cat]] for cat in CATS}
+    metric_best_worst_by_period = {}
+    district_rankings_by_period = {}
+    for _period_label in ALL_PERIODS:
+        overall_ranks, n_overall = rank_simple({d: a["scoring"]["by_quarter"][_period_label]["overall_score"] for d, a in district_aggs.items()})
+        cat_ranks = {}
+        for cat in CATS:
+            cat_ranks[cat] = rank_simple({d: a["scoring"]["by_quarter"][_period_label]["category_scores"][cat] for d, a in district_aggs.items()})
 
-    n_districts = len(district_aggs)
+        metric_ranks = {}
+        for cat in CATS:
+            for label in metric_labels_by_cat[cat]:
+                pop = {}
+                for d, a in district_aggs.items():
+                    m = next((mm for mm in a["scoring"]["by_quarter"][_period_label]["category_metrics"][cat] if mm["label"] == label), None)
+                    pop[d] = m["avg_state_pctl"] if m else None
+                metric_ranks[(cat, label)] = rank_simple(pop)
+
+        for dname, agg in district_aggs.items():
+            bq = agg["scoring"]["by_quarter"][_period_label]
+            bq["overall_state_rank"] = overall_ranks.get(dname)
+            bq["n_districts"] = n_overall
+            for cat in CATS:
+                ranks, n = cat_ranks[cat]
+                bq["category_ranks"][cat] = {"rank": ranks.get(dname), "n": n}
+            for cat in CATS:
+                for m in bq["category_metrics"][cat]:
+                    ranks, n = metric_ranks[(cat, m["label"])]
+                    m["rank"] = ranks.get(dname)
+                    m["n"] = n
+
+        # best/worst district per metric (for the state-level "By Category" callout,
+        # reusing ranks already computed above rather than a fresh pass).
+        metric_best_worst = {}
+        for cat in CATS:
+            for label in metric_labels_by_cat[cat]:
+                ranks, n = metric_ranks[(cat, label)]
+                if not ranks:
+                    metric_best_worst[(cat, label)] = None
+                    continue
+                best = min(ranks.items(), key=lambda kv: kv[1])[0]
+                worst = max(ranks.items(), key=lambda kv: kv[1])[0]
+                metric_best_worst[(cat, label)] = {
+                    "best": {"name": best, "slug": slugify(best)},
+                    "worst": {"name": worst, "slug": slugify(worst)},
+                }
+        metric_best_worst_by_period[_period_label] = metric_best_worst
+
+        # ranked list of every district (for the state's "District Performance"
+        # sub-tab - same 9-column shape as CLF Rankings, one level up).
+        district_rankings = [
+            {
+                "name": dname, "slug": slugify(dname), "n_clfs": agg["overview"]["n_clfs"],
+                "overall_score": agg["scoring"]["by_quarter"][_period_label]["overall_score"],
+                "state_rank": agg["scoring"]["by_quarter"][_period_label]["overall_state_rank"],
+                "n_state": agg["scoring"]["by_quarter"][_period_label]["n_districts"],
+                "categories": agg["scoring"]["by_quarter"][_period_label]["category_scores"],
+            }
+            for dname, agg in district_aggs.items()
+        ]
+        district_rankings.sort(key=lambda r: (r["state_rank"] is None, r["state_rank"]))
+        district_rankings_by_period[_period_label] = district_rankings
+
     for dname, agg in district_aggs.items():
         agg["audit"]["state_rank"] = audit_ranks.get(dname)
         agg["audit"]["n_state"] = n_audit
-        agg["scoring"]["overall_state_rank"] = overall_ranks.get(dname)
-        agg["scoring"]["n_districts"] = n_overall
-        for cat in CATS:
-            ranks, n = cat_ranks[cat]
-            agg["scoring"]["category_ranks"][cat] = {"rank": ranks.get(dname), "n": n}
-        for cat in CATS:
-            for m in agg["scoring"]["category_metrics"][cat]:
-                ranks, n = metric_ranks[(cat, m["label"])]
-                m["rank"] = ranks.get(dname)
-                m["n"] = n
-
-    # best/worst district per metric (for the state-level "By Category" callout,
-    # reusing ranks already computed above rather than a fresh pass).
-    metric_best_worst = {}
-    for cat in CATS:
-        for label in metric_labels_by_cat[cat]:
-            ranks, n = metric_ranks[(cat, label)]
-            if not ranks:
-                metric_best_worst[(cat, label)] = None
-                continue
-            best = min(ranks.items(), key=lambda kv: kv[1])[0]
-            worst = max(ranks.items(), key=lambda kv: kv[1])[0]
-            metric_best_worst[(cat, label)] = {
-                "best": {"name": best, "slug": slugify(best)},
-                "worst": {"name": worst, "slug": slugify(worst)},
-            }
-
-    # ranked list of every district (for the state's "District Performance"
-    # sub-tab - same 9-column shape as CLF Rankings, one level up).
-    district_rankings = [
-        {
-            "name": dname, "slug": slugify(dname), "n_clfs": agg["overview"]["n_clfs"],
-            "overall_score": agg["scoring"]["overall_score"],
-            "state_rank": agg["scoring"]["overall_state_rank"], "n_state": agg["scoring"]["n_districts"],
-            "categories": agg["scoring"]["category_scores"],
-        }
-        for dname, agg in district_aggs.items()
-    ]
-    district_rankings.sort(key=lambda r: (r["state_rank"] is None, r["state_rank"]))
     print(f"[{elapsed()}] Pass 2 (ranking) complete.")
 
     for dname, agg in district_aggs.items():
@@ -3373,12 +3574,14 @@ def stage_5_build_district_state():
     # ============================================================================
     print(f"[{elapsed()}] Aggregating state (all {len(ALL_CLFS)} CLFs)...")
     state_agg = aggregate_group(ALL_CLFS, "Bihar", clf_ranking_mode="top_bottom_20")
-    for cat in CATS:
-        for m in state_agg["scoring"]["category_metrics"][cat]:
-            bw = metric_best_worst.get((cat, m["label"]))
-            m["best_district"] = bw["best"] if bw else None
-            m["worst_district"] = bw["worst"] if bw else None
-    state_agg["scoring"]["district_rankings"] = district_rankings
+    for _period_label in ALL_PERIODS:
+        bq = state_agg["scoring"]["by_quarter"][_period_label]
+        for cat in CATS:
+            for m in bq["category_metrics"][cat]:
+                bw = metric_best_worst_by_period[_period_label].get((cat, m["label"]))
+                m["best_district"] = bw["best"] if bw else None
+                m["worst_district"] = bw["worst"] if bw else None
+        bq["district_rankings"] = district_rankings_by_period[_period_label]
     with open(f"{DATA_DIR}/state.json", "w") as f:
         json.dump(state_agg, f)
     print(f"[{elapsed()}] Wrote state.json.")
@@ -4732,7 +4935,7 @@ def stage_6_make_shell():
     """
 
     JS_VPRP = r"""
-    let vprpYear = 2025;
+    let vprpYear = 'Cumulative';
     let vprpGp = 'ALL';
     const PGSRD_COLORS = ['var(--primary)','var(--gold)','#5B8AA6'];
     const SDP_COLORS = ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)'];
@@ -4748,7 +4951,7 @@ def stage_6_make_shell():
       return `<span class="tip" data-tip="${gpNames.join(', ')}">${gpNames.length} GPs</span>`;
     }
     function yearDropdown(){
-      const opts = [2023,2024,2025].map(y=>`<option value="${y}" ${y===vprpYear?'selected':''}>${y}</option>`).join('');
+      const opts = ['2023','2024','2025','Cumulative'].map(y=>`<option value="${y}" ${y===vprpYear?'selected':''}>${y}</option>`).join('');
       const yearObj = DATA.vprp.years[vprpYear];
       const gpList = (yearObj && yearObj.gp_list) || [];
       const gpBlock = gpList.length ? `<label for="gp-select" style="margin-left:16px;">GP:</label>
@@ -4756,14 +4959,15 @@ def stage_6_make_shell():
       return `<div class="selectbar"><label for="yr-select">Year:</label><select id="yr-select">${opts}</select>${gpBlock}</div>`;
     }
     function emptyYearNote(domainKey){
-      const msg = (ERR_MSG_JS[domainKey] || 'We could not locate data for your CLF in {year}.').replace('{year}', vprpYear);
+      const yearPhrase = vprpYear === 'Cumulative' ? 'any year on record' : vprpYear;
+      const msg = (ERR_MSG_JS[domainKey] || 'We could not locate data for your CLF in {year}.').replace('{year}', yearPhrase);
       return `<p class="disclaimer">${msg}</p>`;
     }
     function renderVprpEnt(){
       const y = currentVprpYearData();
       if(!y || !y.n_demands) return emptyYearNote('vprp_ent');
       const showGp = CURRENT_VIEW === 'clf'; // GP breakdown only makes sense at CLF granularity
-      const accessedNote = vprpYear===2025 ? ` — this year is recent, so accessed status may not be fully updated yet` : '';
+      const accessedNote = vprpYear==='2025' ? ` — this year is recent, so accessed status may not be fully updated yet` : '';
       const schemeRows = (y.by_scheme||[]).map(s=>{
         const tds = `<td>${s.scheme}</td><td class="num">${fmtNum(s.demanded)}</td><td class="num">${fmtNum(s.n_vo)}</td>${showGp?`<td>${vprpGpNamesCell(s.gp_names)}</td>`:''}`;
         let extra = '';
@@ -4836,7 +5040,7 @@ def stage_6_make_shell():
     function renderVPRP(sub){
       const body = sub==='entitlements' ? renderVprpEnt() : sub==='pgsrd' ? renderVprpPgsrd() : renderVprpSdp();
       document.getElementById('panel-vprp').innerHTML = contextBox('vprp') + yearDropdown() + body;
-      document.getElementById('yr-select').addEventListener('change', e=>{ vprpYear=+e.target.value; vprpGp='ALL'; renderVPRP(sub); });
+      document.getElementById('yr-select').addEventListener('change', e=>{ vprpYear=e.target.value; vprpGp='ALL'; renderVPRP(sub); });
       const gpSel = document.getElementById('gp-select');
       if(gpSel) gpSel.addEventListener('change', e=>{ vprpGp=e.target.value; renderVPRP(sub); });
       const y = currentVprpYearData();
@@ -5527,8 +5731,10 @@ def stage_6_make_shell():
         ${bw}
       </div>`;
     }
+    let groupScoreQtrIdx = 0;
+    function currentGroupScoring(){ return GROUP_DATA.scoring.by_quarter[GROUP_DATA.scoring.quarters[groupScoreQtrIdx]]; }
     function renderGroupScoringOverall(){
-      const s = GROUP_DATA.scoring;
+      const s = currentGroupScoring();
       const cats = Object.entries(s.category_scores);
       const scoreLabel = (isState()?'Statewide':'District')+' Overall Score';
       const scoredSub = `${fmtNum(s.n_clfs_scored)} of ${fmtNum(s.n_total)} CLFs scored`;
@@ -5538,9 +5744,109 @@ def stage_6_make_shell():
             ${standingCard('state', s.overall_score, s.overall_state_rank, s.n_districts, 'Overall Score', 'Standing vs. State')}
           </div>`;
       return `<section><div class="section-head"><h2 class="serif">Overall Score</h2><span class="hint">average of each CLF's own Overall Score, equal weight per CLF</span></div>
-        <div class="panel">${soloTile}${standingBlock}</div></section>
+        <div class="panel">
+          <div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button id="btn-open-group-weights" class="weight-btn">&#9881;&#65039; Choose Category Weights</button></div>
+          ${soloTile}${standingBlock}</div></section>
       <section><div class="section-head"><h2 class="serif">Category Summary</h2><span class="hint">click a category to jump to its own tab</span></div>
         <div class="panel">${cats.map(([k,v])=>{ const cr = s.category_ranks[k]; const inner = categoryScoreBlock(k, v, cr&&cr.rank, cr&&cr.n); return CATEGORY_LINK[k] ? `<div class="cat-link" data-cat="${k}">${inner}</div>` : inner; }).join('')}</div></section>`;
+    }
+    // ============================================================================
+    // District/State customizable category weights - reuses WEIGHT_CATS /
+    // computeWeightedScore / ensureScoringSummary from CLF scope (same script,
+    // shared scope). "My score" here is an aggregate: the equal-weight mean of
+    // each member CLF's own reweighted score under the chosen weights - matching
+    // how the un-reweighted district/state Overall Score is itself computed
+    // server-side (mean of member CLF scores), not a re-derivation of it.
+    // District is ranked against the other 37 districts, each computed the same
+    // way. State has no peer to rank against (only one state), so it's shown
+    // informationally alongside the reweighted Top 20/Bottom 20 CLF list instead.
+    // ============================================================================
+    let groupCategoryWeights = null;
+    function groupWeightModalHtml(){
+      return `<div class="weight-modal-backdrop" id="group-weight-modal-backdrop">
+        <div class="weight-modal">
+          <div class="weight-modal-head"><h3>Choose Category Weights</h3><button class="weight-modal-close" id="btn-close-group-weights">&times;</button></div>
+          <p class="weight-modal-hint">Drag each slider to change how much that category counts toward the ${isState()?'Statewide':'District'} Average Score, for the quarter currently selected on this tab. Weights are relative to each other, not fixed percentages - move any slider and the rest adjust automatically.</p>
+          <div id="group-weight-rows"></div>
+          <div class="weight-result" id="group-weight-result"></div>
+          <div class="weight-modal-actions">
+            <button class="weight-reset-btn" id="btn-reset-group-weights">Reset to Equal Weights</button>
+            <button class="weight-done-btn" id="btn-done-group-weights">Done</button>
+          </div>
+        </div>
+      </div>`;
+    }
+    function renderGroupWeightRows(){
+      const total = WEIGHT_CATS.reduce((a,c)=>a+groupCategoryWeights[c],0) || 1;
+      document.getElementById('group-weight-rows').innerHTML = WEIGHT_CATS.map(cat=>{
+        const pct = Math.round(groupCategoryWeights[cat]/total*100);
+        return `<div class="weight-row">
+          <div class="weight-row-head"><span class="wname">${cat}</span><span class="wpct">${pct}%</span></div>
+          <input type="range" min="0" max="100" value="${groupCategoryWeights[cat]}" class="weight-slider" data-cat="${cat}">
+        </div>`;
+      }).join('');
+      document.querySelectorAll('#group-weight-rows .weight-slider').forEach(el=>{
+        el.addEventListener('input', e=>{ groupCategoryWeights[e.target.dataset.cat] = +e.target.value; renderGroupWeightRows(); renderGroupWeightResult(); });
+      });
+    }
+    let groupWeightRequestId = 0;
+    async function renderGroupWeightResult(){
+      const myRequestId = ++groupWeightRequestId;
+      const box = document.getElementById('group-weight-result');
+      box.innerHTML = `<div class="weight-result-row"><span class="wlabel">Recomputed ${isState()?'Statewide':'District'} Average Score</span><span class="wval gold">Loading&hellip;</span></div>`;
+      const summary = await ensureScoringSummary();
+      const qLabel = GROUP_DATA.scoring.quarters[groupScoreQtrIdx];
+      const scoredAll = summary.clfs.map(c=>({
+        id: c.id, district: c.district,
+        score: computeWeightedScore(c.by_quarter[qLabel] || {}, groupCategoryWeights),
+      })).filter(c=>c.score!=null);
+      const byDistrict = {};
+      scoredAll.forEach(c=>{ (byDistrict[c.district] = byDistrict[c.district] || []).push(c.score); });
+      const districtAvgs = Object.entries(byDistrict).map(([name,scores])=>({
+        name, avg: scores.reduce((a,b)=>a+b,0)/scores.length,
+      }));
+      districtAvgs.sort((a,b)=>b.avg-a.avg);
+      // a newer call (from another slider move) may have started and finished
+      // while this fetch/sort was in flight - discard this stale result rather
+      // than clobber whatever the newer call already rendered
+      if(myRequestId !== groupWeightRequestId) return;
+      if(isState()){
+        const stateAvg = scoredAll.length ? scoredAll.reduce((a,c)=>a+c.score,0)/scoredAll.length : null;
+        const scoreHtml = stateAvg!=null ? Math.round(stateAvg)+' / 100' : ERR_MSG_JS.not_found;
+        box.innerHTML = `
+          <div class="weight-result-row"><span class="wlabel">Recomputed Statewide Average Score</span><span class="wval">${scoreHtml}</span></div>
+          <p class="hint" style="margin-top:6px;">Shown for reference only - there's no peer to rank the state against. The CLF Rankings tab's Top 20 / Bottom 20 lists reflect these same custom weights.</p>`;
+      } else {
+        const myEntry = districtAvgs.find(d=>d.name===GROUP_DATA.name);
+        const myRank = myEntry ? districtAvgs.findIndex(d=>d.name===GROUP_DATA.name)+1 : 0;
+        const scoreHtml = myEntry ? Math.round(myEntry.avg)+' / 100' : ERR_MSG_JS.not_found;
+        box.innerHTML = `
+          <div class="weight-result-row"><span class="wlabel">Recomputed District Average Score</span><span class="wval">${scoreHtml}</span></div>
+          <div class="weight-result-row"><span class="wlabel">State Rank</span><span class="wval gold">${myRank>0?myRank+ord(myRank)+' of '+districtAvgs.length:ERR_MSG_JS.not_found}</span></div>`;
+      }
+    }
+    function openGroupWeightModal(){
+      if(!groupCategoryWeights){
+        groupCategoryWeights = {};
+        WEIGHT_CATS.forEach(cat=>groupCategoryWeights[cat]=50);
+      }
+      if(!document.getElementById('group-weight-modal-backdrop')){
+        document.body.insertAdjacentHTML('beforeend', groupWeightModalHtml());
+        document.getElementById('btn-close-group-weights').addEventListener('click', closeGroupWeightModal);
+        document.getElementById('btn-done-group-weights').addEventListener('click', closeGroupWeightModal);
+        document.getElementById('btn-reset-group-weights').addEventListener('click', ()=>{
+          WEIGHT_CATS.forEach(cat=>groupCategoryWeights[cat]=50); renderGroupWeightRows(); renderGroupWeightResult();
+        });
+        document.getElementById('group-weight-modal-backdrop').addEventListener('click', e=>{
+          if(e.target.id==='group-weight-modal-backdrop') closeGroupWeightModal();
+        });
+      }
+      renderGroupWeightRows(); renderGroupWeightResult();
+      document.getElementById('group-weight-modal-backdrop').classList.add('open');
+    }
+    function closeGroupWeightModal(){
+      const el = document.getElementById('group-weight-modal-backdrop');
+      if(el) el.classList.remove('open');
     }
     // ---- District/State Data Coverage detail: the per-source coverage-count
     // breakdown behind the Data Coverage category's single metric, shown within
@@ -5560,7 +5866,7 @@ def stage_6_make_shell():
         }).join('');
     }
     function renderGroupScoringByCategory(){
-      const s = GROUP_DATA.scoring;
+      const s = currentGroupScoring();
       const scopeText = isState() ? 'across all CLFs in Bihar' : `across all CLFs in ${GROUP_DATA.name} district`;
       const desc = isState()
         ? `Each metric below shows the actual statewide average value (not a percentile - averaging a percentile against the whole state it's drawn from converges to ~50 regardless of the underlying data), plus which district is doing best and worst on it.`
@@ -5579,7 +5885,7 @@ def stage_6_make_shell():
       }).join('');
     }
     const CLF_RANK_COLS = () => {
-      const mode = GROUP_DATA.scoring.clf_ranking_mode;
+      const mode = currentGroupScoring().clf_ranking_mode;
       return [
         {label:'Rank', key: mode==='top_bottom_20' ? 'state_rank' : 'district_rank'},
         {label:'CLF', key:'name'},
@@ -5602,7 +5908,7 @@ def stage_6_make_shell():
     // bottom-20 CLF with one strong sub-score could sort near the top of the
     // visible list and wrongly render green).
     function clfRankRow(r){
-      const mode = GROUP_DATA.scoring.clf_ranking_mode;
+      const mode = currentGroupScoring().clf_ranking_mode;
       const rankNum = mode==='top_bottom_20' ? r.state_rank : r.district_rank;
       const tierClass = r.tier==='bottom' ? ' tier-bottom' : r.tier==='top' ? ' tier-top' : '';
       // District name is plain text here (not linked) - the District Performance
@@ -5623,18 +5929,18 @@ def stage_6_make_shell():
       ];
     }
     function flattenedRankings(){
-      return GROUP_DATA.scoring.clf_rankings.map(r=>({...r, ...r.categories}));
+      return currentGroupScoring().clf_rankings.map(r=>({...r, ...r.categories}));
     }
     function renderGroupScoringRankings(){
-      const mode = GROUP_DATA.scoring.clf_ranking_mode;
+      const mode = currentGroupScoring().clf_ranking_mode;
       if(mode==='top_bottom_20'){
-        const commonHint = `of all ${fmtNum(GROUP_DATA.scoring.n_total)} CLFs in Bihar &middot; click a column to sort &middot; click a CLF or District to open its tracker`;
+        const commonHint = `of all ${fmtNum(currentGroupScoring().n_total)} CLFs in Bihar &middot; click a column to sort &middot; click a CLF or District to open its tracker`;
         return `<section><div class="section-head"><h2 class="serif">Top 20 CLFs</h2><span class="hint">highest overall score ${commonHint}</span></div>
           <div class="panel"><div id="clf-rankings-top-container"></div></div></section>
         <section><div class="section-head"><h2 class="serif">Bottom 20 CLFs</h2><span class="hint">lowest overall score ${commonHint}</span></div>
           <div class="panel"><div id="clf-rankings-bottom-container"></div></div></section>`;
       }
-      const hint = `all ${GROUP_DATA.scoring.clf_rankings.length} CLFs in ${GROUP_DATA.name} district &middot; click a column to sort &middot; click a CLF to open its tracker`;
+      const hint = `all ${currentGroupScoring().clf_rankings.length} CLFs in ${GROUP_DATA.name} district &middot; click a column to sort &middot; click a CLF to open its tracker`;
       return `<section><div class="section-head"><h2 class="serif">CLF Performance</h2><span class="hint">${hint}</span></div>
         <div class="panel"><div id="clf-rankings-container"></div></div></section>`;
     }
@@ -5669,14 +5975,14 @@ def stage_6_make_shell():
       ];
     }
     function flattenedDistrictRankings(){
-      return GROUP_DATA.scoring.district_rankings.map(r=>({...r, ...r.categories}));
+      return currentGroupScoring().district_rankings.map(r=>({...r, ...r.categories}));
     }
-    // State's own true CLF-weighted aggregate (GROUP_DATA.scoring.category_scores/
+    // State's own true CLF-weighted aggregate (currentGroupScoring().category_scores/
     // overall_score), NOT a re-average of the districts array (that would be an
     // unweighted mean-of-means). Only ever called from State view.
     function stateAverageRow(){
-      const cs = GROUP_DATA.scoring.category_scores;
-      const os = GROUP_DATA.scoring.overall_score;
+      const cs = currentGroupScoring().category_scores;
+      const os = currentGroupScoring().overall_score;
       // Raw data object, shaped like a real (flattened) district row - lets it
       // sort naturally alongside real rows in makeSortableTable (see comment
       // there), rather than being pinned to a fixed position.
@@ -5684,17 +5990,25 @@ def stage_6_make_shell():
         categories: cs, overall_score: os, ...cs };
     }
     function renderGroupScoringDistrictRankings(){
-      return `<section><div class="section-head"><h2 class="serif">District Performance</h2><span class="hint">all ${GROUP_DATA.scoring.district_rankings.length} districts in Bihar &middot; click a column to sort &middot; click a District to open its tracker</span></div>
+      return `<section><div class="section-head"><h2 class="serif">District Performance</h2><span class="hint">all ${currentGroupScoring().district_rankings.length} districts in Bihar &middot; click a column to sort &middot; click a District to open its tracker</span></div>
         <div class="panel"><div id="district-rankings-container"></div></div></section>`;
     }
     function renderGroupScoring(sub){
+      const opts = GROUP_DATA.scoring.quarters.map((label,i)=>`<option value="${i}" ${i===groupScoreQtrIdx?'selected':''}>${label}</option>`).join('');
+      const dropdown = `<div class="selectbar"><label for="group-score-qtr-select">Quarter:</label><select id="group-score-qtr-select">${opts}</select></div>
+        <p class="note-inline">Fund Deployment, Surplus / Deficit, Bookkeeping Accuracy, every Loan Portfolio, Data Coverage, VRF Fund Health, Governance &amp; Compliance, and Welfare and Livelihood metric reflect current standing and don't change by quarter — only the other Fund Utilization &amp; Financial Health line items update.</p>`;
       const body = sub==='overall' ? renderGroupScoringOverall()
         : sub==='bycategory' ? renderGroupScoringByCategory()
         : sub==='rankings' ? renderGroupScoringRankings()
         : renderGroupScoringDistrictRankings();
-      document.getElementById('panel-scoring').innerHTML = contextBox('scoring') + body;
+      document.getElementById('panel-scoring').innerHTML = contextBox('scoring') + dropdown + body;
+      document.getElementById('group-score-qtr-select').addEventListener('change', e=>{ groupScoreQtrIdx=+e.target.value; renderGroupScoring(sub); });
+      if(sub==='overall'){
+        const btn = document.getElementById('btn-open-group-weights');
+        if(btn) btn.addEventListener('click', openGroupWeightModal);
+      }
       if(sub==='rankings'){
-        const mode = GROUP_DATA.scoring.clf_ranking_mode;
+        const mode = currentGroupScoring().clf_ranking_mode;
         if(mode==='top_bottom_20'){
           const all = flattenedRankings();
           makeSortableTable('clf-rankings-top-container', CLF_RANK_COLS(), all.filter(r=>r.tier==='top'), clfRankRow);
@@ -5944,7 +6258,7 @@ def stage_6_make_shell():
         DATA = data;
         CURRENT_VIEW = 'clf';
         showTracker();
-        currentTab='overview'; currentSub='profile'; finQtrIdx = DATA.financial.quarters.length - 1; vprpYear = 2025; vprpGp = 'ALL'; voDetailCode = null; scoreQtrIdx = DATA.scoring.default_idx;
+        currentTab='overview'; currentSub='profile'; finQtrIdx = DATA.financial.quarters.length - 1; vprpYear = 'Cumulative'; vprpGp = 'ALL'; voDetailCode = null; scoreQtrIdx = DATA.scoring.default_idx;
         renderAll();
       } catch(e){
         showLandingError(`Could not load data for MIS ID ${misId}. It may not have data available.`);
@@ -5958,7 +6272,7 @@ def stage_6_make_shell():
         GROUP_DATA = data; GROUP_PSEUDO_CLF = data.pseudo_clf;
         CURRENT_VIEW = 'district';
         showTracker();
-        currentTab='overview'; currentSub='profile'; finQtrIdx = GROUP_DATA.financial.quarters.length - 1; vprpYear = 2025; vprpGp = 'ALL';
+        currentTab='overview'; currentSub='profile'; finQtrIdx = GROUP_DATA.financial.quarters.length - 1; vprpYear = 'Cumulative'; vprpGp = 'ALL'; groupScoreQtrIdx = GROUP_DATA.scoring.default_idx;
         renderAll();
       } catch(e){
         showLandingError(`Could not load the District Tracker.`);
@@ -5972,7 +6286,7 @@ def stage_6_make_shell():
         GROUP_DATA = data; GROUP_PSEUDO_CLF = data.pseudo_clf;
         CURRENT_VIEW = 'state';
         showTracker();
-        currentTab='overview'; currentSub='profile'; finQtrIdx = GROUP_DATA.financial.quarters.length - 1; vprpYear = 2025; vprpGp = 'ALL';
+        currentTab='overview'; currentSub='profile'; finQtrIdx = GROUP_DATA.financial.quarters.length - 1; vprpYear = 'Cumulative'; vprpGp = 'ALL'; groupScoreQtrIdx = GROUP_DATA.scoring.default_idx;
         renderAll();
       } catch(e){
         showLandingError(`Could not load the Statewide Tracker.`);
