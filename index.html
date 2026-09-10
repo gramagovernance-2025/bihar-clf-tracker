@@ -1213,7 +1213,7 @@
       }
     }
     
-    let vprpYear = 2025;
+    let vprpYear = 'Cumulative';
     let vprpGp = 'ALL';
     const PGSRD_COLORS = ['var(--primary)','var(--gold)','#5B8AA6'];
     const SDP_COLORS = ['var(--primary)','var(--gold)','#5B8AA6','var(--low)','var(--grey)'];
@@ -1229,7 +1229,7 @@
       return `<span class="tip" data-tip="${gpNames.join(', ')}">${gpNames.length} GPs</span>`;
     }
     function yearDropdown(){
-      const opts = [2023,2024,2025].map(y=>`<option value="${y}" ${y===vprpYear?'selected':''}>${y}</option>`).join('');
+      const opts = ['2023','2024','2025','Cumulative'].map(y=>`<option value="${y}" ${y===vprpYear?'selected':''}>${y}</option>`).join('');
       const yearObj = DATA.vprp.years[vprpYear];
       const gpList = (yearObj && yearObj.gp_list) || [];
       const gpBlock = gpList.length ? `<label for="gp-select" style="margin-left:16px;">GP:</label>
@@ -1237,14 +1237,15 @@
       return `<div class="selectbar"><label for="yr-select">Year:</label><select id="yr-select">${opts}</select>${gpBlock}</div>`;
     }
     function emptyYearNote(domainKey){
-      const msg = (ERR_MSG_JS[domainKey] || 'We could not locate data for your CLF in {year}.').replace('{year}', vprpYear);
+      const yearPhrase = vprpYear === 'Cumulative' ? 'any year on record' : vprpYear;
+      const msg = (ERR_MSG_JS[domainKey] || 'We could not locate data for your CLF in {year}.').replace('{year}', yearPhrase);
       return `<p class="disclaimer">${msg}</p>`;
     }
     function renderVprpEnt(){
       const y = currentVprpYearData();
       if(!y || !y.n_demands) return emptyYearNote('vprp_ent');
       const showGp = CURRENT_VIEW === 'clf'; // GP breakdown only makes sense at CLF granularity
-      const accessedNote = vprpYear===2025 ? ` — this year is recent, so accessed status may not be fully updated yet` : '';
+      const accessedNote = vprpYear==='2025' ? ` — this year is recent, so accessed status may not be fully updated yet` : '';
       const schemeRows = (y.by_scheme||[]).map(s=>{
         const tds = `<td>${s.scheme}</td><td class="num">${fmtNum(s.demanded)}</td><td class="num">${fmtNum(s.n_vo)}</td>${showGp?`<td>${vprpGpNamesCell(s.gp_names)}</td>`:''}`;
         let extra = '';
@@ -1317,7 +1318,7 @@
     function renderVPRP(sub){
       const body = sub==='entitlements' ? renderVprpEnt() : sub==='pgsrd' ? renderVprpPgsrd() : renderVprpSdp();
       document.getElementById('panel-vprp').innerHTML = contextBox('vprp') + yearDropdown() + body;
-      document.getElementById('yr-select').addEventListener('change', e=>{ vprpYear=+e.target.value; vprpGp='ALL'; renderVPRP(sub); });
+      document.getElementById('yr-select').addEventListener('change', e=>{ vprpYear=e.target.value; vprpGp='ALL'; renderVPRP(sub); });
       const gpSel = document.getElementById('gp-select');
       if(gpSel) gpSel.addEventListener('change', e=>{ vprpGp=e.target.value; renderVPRP(sub); });
       const y = currentVprpYearData();
@@ -1998,8 +1999,10 @@
         ${bw}
       </div>`;
     }
+    let groupScoreQtrIdx = 0;
+    function currentGroupScoring(){ return GROUP_DATA.scoring.by_quarter[GROUP_DATA.scoring.quarters[groupScoreQtrIdx]]; }
     function renderGroupScoringOverall(){
-      const s = GROUP_DATA.scoring;
+      const s = currentGroupScoring();
       const cats = Object.entries(s.category_scores);
       const scoreLabel = (isState()?'Statewide':'District')+' Overall Score';
       const scoredSub = `${fmtNum(s.n_clfs_scored)} of ${fmtNum(s.n_total)} CLFs scored`;
@@ -2009,9 +2012,109 @@
             ${standingCard('state', s.overall_score, s.overall_state_rank, s.n_districts, 'Overall Score', 'Standing vs. State')}
           </div>`;
       return `<section><div class="section-head"><h2 class="serif">Overall Score</h2><span class="hint">average of each CLF's own Overall Score, equal weight per CLF</span></div>
-        <div class="panel">${soloTile}${standingBlock}</div></section>
+        <div class="panel">
+          <div style="display:flex;justify-content:flex-end;margin-bottom:14px;"><button id="btn-open-group-weights" class="weight-btn">&#9881;&#65039; Choose Category Weights</button></div>
+          ${soloTile}${standingBlock}</div></section>
       <section><div class="section-head"><h2 class="serif">Category Summary</h2><span class="hint">click a category to jump to its own tab</span></div>
         <div class="panel">${cats.map(([k,v])=>{ const cr = s.category_ranks[k]; const inner = categoryScoreBlock(k, v, cr&&cr.rank, cr&&cr.n); return CATEGORY_LINK[k] ? `<div class="cat-link" data-cat="${k}">${inner}</div>` : inner; }).join('')}</div></section>`;
+    }
+    // ============================================================================
+    // District/State customizable category weights - reuses WEIGHT_CATS /
+    // computeWeightedScore / ensureScoringSummary from CLF scope (same script,
+    // shared scope). "My score" here is an aggregate: the equal-weight mean of
+    // each member CLF's own reweighted score under the chosen weights - matching
+    // how the un-reweighted district/state Overall Score is itself computed
+    // server-side (mean of member CLF scores), not a re-derivation of it.
+    // District is ranked against the other 37 districts, each computed the same
+    // way. State has no peer to rank against (only one state), so it's shown
+    // informationally alongside the reweighted Top 20/Bottom 20 CLF list instead.
+    // ============================================================================
+    let groupCategoryWeights = null;
+    function groupWeightModalHtml(){
+      return `<div class="weight-modal-backdrop" id="group-weight-modal-backdrop">
+        <div class="weight-modal">
+          <div class="weight-modal-head"><h3>Choose Category Weights</h3><button class="weight-modal-close" id="btn-close-group-weights">&times;</button></div>
+          <p class="weight-modal-hint">Drag each slider to change how much that category counts toward the ${isState()?'Statewide':'District'} Average Score, for the quarter currently selected on this tab. Weights are relative to each other, not fixed percentages - move any slider and the rest adjust automatically.</p>
+          <div id="group-weight-rows"></div>
+          <div class="weight-result" id="group-weight-result"></div>
+          <div class="weight-modal-actions">
+            <button class="weight-reset-btn" id="btn-reset-group-weights">Reset to Equal Weights</button>
+            <button class="weight-done-btn" id="btn-done-group-weights">Done</button>
+          </div>
+        </div>
+      </div>`;
+    }
+    function renderGroupWeightRows(){
+      const total = WEIGHT_CATS.reduce((a,c)=>a+groupCategoryWeights[c],0) || 1;
+      document.getElementById('group-weight-rows').innerHTML = WEIGHT_CATS.map(cat=>{
+        const pct = Math.round(groupCategoryWeights[cat]/total*100);
+        return `<div class="weight-row">
+          <div class="weight-row-head"><span class="wname">${cat}</span><span class="wpct">${pct}%</span></div>
+          <input type="range" min="0" max="100" value="${groupCategoryWeights[cat]}" class="weight-slider" data-cat="${cat}">
+        </div>`;
+      }).join('');
+      document.querySelectorAll('#group-weight-rows .weight-slider').forEach(el=>{
+        el.addEventListener('input', e=>{ groupCategoryWeights[e.target.dataset.cat] = +e.target.value; renderGroupWeightRows(); renderGroupWeightResult(); });
+      });
+    }
+    let groupWeightRequestId = 0;
+    async function renderGroupWeightResult(){
+      const myRequestId = ++groupWeightRequestId;
+      const box = document.getElementById('group-weight-result');
+      box.innerHTML = `<div class="weight-result-row"><span class="wlabel">Recomputed ${isState()?'Statewide':'District'} Average Score</span><span class="wval gold">Loading&hellip;</span></div>`;
+      const summary = await ensureScoringSummary();
+      const qLabel = GROUP_DATA.scoring.quarters[groupScoreQtrIdx];
+      const scoredAll = summary.clfs.map(c=>({
+        id: c.id, district: c.district,
+        score: computeWeightedScore(c.by_quarter[qLabel] || {}, groupCategoryWeights),
+      })).filter(c=>c.score!=null);
+      const byDistrict = {};
+      scoredAll.forEach(c=>{ (byDistrict[c.district] = byDistrict[c.district] || []).push(c.score); });
+      const districtAvgs = Object.entries(byDistrict).map(([name,scores])=>({
+        name, avg: scores.reduce((a,b)=>a+b,0)/scores.length,
+      }));
+      districtAvgs.sort((a,b)=>b.avg-a.avg);
+      // a newer call (from another slider move) may have started and finished
+      // while this fetch/sort was in flight - discard this stale result rather
+      // than clobber whatever the newer call already rendered
+      if(myRequestId !== groupWeightRequestId) return;
+      if(isState()){
+        const stateAvg = scoredAll.length ? scoredAll.reduce((a,c)=>a+c.score,0)/scoredAll.length : null;
+        const scoreHtml = stateAvg!=null ? Math.round(stateAvg)+' / 100' : ERR_MSG_JS.not_found;
+        box.innerHTML = `
+          <div class="weight-result-row"><span class="wlabel">Recomputed Statewide Average Score</span><span class="wval">${scoreHtml}</span></div>
+          <p class="hint" style="margin-top:6px;">Shown for reference only - there's no peer to rank the state against. The CLF Rankings tab's Top 20 / Bottom 20 lists reflect these same custom weights.</p>`;
+      } else {
+        const myEntry = districtAvgs.find(d=>d.name===GROUP_DATA.name);
+        const myRank = myEntry ? districtAvgs.findIndex(d=>d.name===GROUP_DATA.name)+1 : 0;
+        const scoreHtml = myEntry ? Math.round(myEntry.avg)+' / 100' : ERR_MSG_JS.not_found;
+        box.innerHTML = `
+          <div class="weight-result-row"><span class="wlabel">Recomputed District Average Score</span><span class="wval">${scoreHtml}</span></div>
+          <div class="weight-result-row"><span class="wlabel">State Rank</span><span class="wval gold">${myRank>0?myRank+ord(myRank)+' of '+districtAvgs.length:ERR_MSG_JS.not_found}</span></div>`;
+      }
+    }
+    function openGroupWeightModal(){
+      if(!groupCategoryWeights){
+        groupCategoryWeights = {};
+        WEIGHT_CATS.forEach(cat=>groupCategoryWeights[cat]=50);
+      }
+      if(!document.getElementById('group-weight-modal-backdrop')){
+        document.body.insertAdjacentHTML('beforeend', groupWeightModalHtml());
+        document.getElementById('btn-close-group-weights').addEventListener('click', closeGroupWeightModal);
+        document.getElementById('btn-done-group-weights').addEventListener('click', closeGroupWeightModal);
+        document.getElementById('btn-reset-group-weights').addEventListener('click', ()=>{
+          WEIGHT_CATS.forEach(cat=>groupCategoryWeights[cat]=50); renderGroupWeightRows(); renderGroupWeightResult();
+        });
+        document.getElementById('group-weight-modal-backdrop').addEventListener('click', e=>{
+          if(e.target.id==='group-weight-modal-backdrop') closeGroupWeightModal();
+        });
+      }
+      renderGroupWeightRows(); renderGroupWeightResult();
+      document.getElementById('group-weight-modal-backdrop').classList.add('open');
+    }
+    function closeGroupWeightModal(){
+      const el = document.getElementById('group-weight-modal-backdrop');
+      if(el) el.classList.remove('open');
     }
     // ---- District/State Data Coverage detail: the per-source coverage-count
     // breakdown behind the Data Coverage category's single metric, shown within
@@ -2031,7 +2134,7 @@
         }).join('');
     }
     function renderGroupScoringByCategory(){
-      const s = GROUP_DATA.scoring;
+      const s = currentGroupScoring();
       const scopeText = isState() ? 'across all CLFs in Bihar' : `across all CLFs in ${GROUP_DATA.name} district`;
       const desc = isState()
         ? `Each metric below shows the actual statewide average value (not a percentile - averaging a percentile against the whole state it's drawn from converges to ~50 regardless of the underlying data), plus which district is doing best and worst on it.`
@@ -2050,7 +2153,7 @@
       }).join('');
     }
     const CLF_RANK_COLS = () => {
-      const mode = GROUP_DATA.scoring.clf_ranking_mode;
+      const mode = currentGroupScoring().clf_ranking_mode;
       return [
         {label:'Rank', key: mode==='top_bottom_20' ? 'state_rank' : 'district_rank'},
         {label:'CLF', key:'name'},
@@ -2073,7 +2176,7 @@
     // bottom-20 CLF with one strong sub-score could sort near the top of the
     // visible list and wrongly render green).
     function clfRankRow(r){
-      const mode = GROUP_DATA.scoring.clf_ranking_mode;
+      const mode = currentGroupScoring().clf_ranking_mode;
       const rankNum = mode==='top_bottom_20' ? r.state_rank : r.district_rank;
       const tierClass = r.tier==='bottom' ? ' tier-bottom' : r.tier==='top' ? ' tier-top' : '';
       // District name is plain text here (not linked) - the District Performance
@@ -2094,18 +2197,18 @@
       ];
     }
     function flattenedRankings(){
-      return GROUP_DATA.scoring.clf_rankings.map(r=>({...r, ...r.categories}));
+      return currentGroupScoring().clf_rankings.map(r=>({...r, ...r.categories}));
     }
     function renderGroupScoringRankings(){
-      const mode = GROUP_DATA.scoring.clf_ranking_mode;
+      const mode = currentGroupScoring().clf_ranking_mode;
       if(mode==='top_bottom_20'){
-        const commonHint = `of all ${fmtNum(GROUP_DATA.scoring.n_total)} CLFs in Bihar &middot; click a column to sort &middot; click a CLF or District to open its tracker`;
+        const commonHint = `of all ${fmtNum(currentGroupScoring().n_total)} CLFs in Bihar &middot; click a column to sort &middot; click a CLF or District to open its tracker`;
         return `<section><div class="section-head"><h2 class="serif">Top 20 CLFs</h2><span class="hint">highest overall score ${commonHint}</span></div>
           <div class="panel"><div id="clf-rankings-top-container"></div></div></section>
         <section><div class="section-head"><h2 class="serif">Bottom 20 CLFs</h2><span class="hint">lowest overall score ${commonHint}</span></div>
           <div class="panel"><div id="clf-rankings-bottom-container"></div></div></section>`;
       }
-      const hint = `all ${GROUP_DATA.scoring.clf_rankings.length} CLFs in ${GROUP_DATA.name} district &middot; click a column to sort &middot; click a CLF to open its tracker`;
+      const hint = `all ${currentGroupScoring().clf_rankings.length} CLFs in ${GROUP_DATA.name} district &middot; click a column to sort &middot; click a CLF to open its tracker`;
       return `<section><div class="section-head"><h2 class="serif">CLF Performance</h2><span class="hint">${hint}</span></div>
         <div class="panel"><div id="clf-rankings-container"></div></div></section>`;
     }
@@ -2140,14 +2243,14 @@
       ];
     }
     function flattenedDistrictRankings(){
-      return GROUP_DATA.scoring.district_rankings.map(r=>({...r, ...r.categories}));
+      return currentGroupScoring().district_rankings.map(r=>({...r, ...r.categories}));
     }
-    // State's own true CLF-weighted aggregate (GROUP_DATA.scoring.category_scores/
+    // State's own true CLF-weighted aggregate (currentGroupScoring().category_scores/
     // overall_score), NOT a re-average of the districts array (that would be an
     // unweighted mean-of-means). Only ever called from State view.
     function stateAverageRow(){
-      const cs = GROUP_DATA.scoring.category_scores;
-      const os = GROUP_DATA.scoring.overall_score;
+      const cs = currentGroupScoring().category_scores;
+      const os = currentGroupScoring().overall_score;
       // Raw data object, shaped like a real (flattened) district row - lets it
       // sort naturally alongside real rows in makeSortableTable (see comment
       // there), rather than being pinned to a fixed position.
@@ -2155,17 +2258,25 @@
         categories: cs, overall_score: os, ...cs };
     }
     function renderGroupScoringDistrictRankings(){
-      return `<section><div class="section-head"><h2 class="serif">District Performance</h2><span class="hint">all ${GROUP_DATA.scoring.district_rankings.length} districts in Bihar &middot; click a column to sort &middot; click a District to open its tracker</span></div>
+      return `<section><div class="section-head"><h2 class="serif">District Performance</h2><span class="hint">all ${currentGroupScoring().district_rankings.length} districts in Bihar &middot; click a column to sort &middot; click a District to open its tracker</span></div>
         <div class="panel"><div id="district-rankings-container"></div></div></section>`;
     }
     function renderGroupScoring(sub){
+      const opts = GROUP_DATA.scoring.quarters.map((label,i)=>`<option value="${i}" ${i===groupScoreQtrIdx?'selected':''}>${label}</option>`).join('');
+      const dropdown = `<div class="selectbar"><label for="group-score-qtr-select">Quarter:</label><select id="group-score-qtr-select">${opts}</select></div>
+        <p class="note-inline">Fund Deployment, Surplus / Deficit, Bookkeeping Accuracy, every Loan Portfolio, Data Coverage, VRF Fund Health, Governance &amp; Compliance, and Welfare and Livelihood metric reflect current standing and don't change by quarter — only the other Fund Utilization &amp; Financial Health line items update.</p>`;
       const body = sub==='overall' ? renderGroupScoringOverall()
         : sub==='bycategory' ? renderGroupScoringByCategory()
         : sub==='rankings' ? renderGroupScoringRankings()
         : renderGroupScoringDistrictRankings();
-      document.getElementById('panel-scoring').innerHTML = contextBox('scoring') + body;
+      document.getElementById('panel-scoring').innerHTML = contextBox('scoring') + dropdown + body;
+      document.getElementById('group-score-qtr-select').addEventListener('change', e=>{ groupScoreQtrIdx=+e.target.value; renderGroupScoring(sub); });
+      if(sub==='overall'){
+        const btn = document.getElementById('btn-open-group-weights');
+        if(btn) btn.addEventListener('click', openGroupWeightModal);
+      }
       if(sub==='rankings'){
-        const mode = GROUP_DATA.scoring.clf_ranking_mode;
+        const mode = currentGroupScoring().clf_ranking_mode;
         if(mode==='top_bottom_20'){
           const all = flattenedRankings();
           makeSortableTable('clf-rankings-top-container', CLF_RANK_COLS(), all.filter(r=>r.tier==='top'), clfRankRow);
@@ -2405,7 +2516,7 @@
         DATA = data;
         CURRENT_VIEW = 'clf';
         showTracker();
-        currentTab='overview'; currentSub='profile'; finQtrIdx = DATA.financial.quarters.length - 1; vprpYear = 2025; vprpGp = 'ALL'; voDetailCode = null; scoreQtrIdx = DATA.scoring.default_idx;
+        currentTab='overview'; currentSub='profile'; finQtrIdx = DATA.financial.quarters.length - 1; vprpYear = 'Cumulative'; vprpGp = 'ALL'; voDetailCode = null; scoreQtrIdx = DATA.scoring.default_idx;
         renderAll();
       } catch(e){
         showLandingError(`Could not load data for MIS ID ${misId}. It may not have data available.`);
@@ -2419,7 +2530,7 @@
         GROUP_DATA = data; GROUP_PSEUDO_CLF = data.pseudo_clf;
         CURRENT_VIEW = 'district';
         showTracker();
-        currentTab='overview'; currentSub='profile'; finQtrIdx = GROUP_DATA.financial.quarters.length - 1; vprpYear = 2025; vprpGp = 'ALL';
+        currentTab='overview'; currentSub='profile'; finQtrIdx = GROUP_DATA.financial.quarters.length - 1; vprpYear = 'Cumulative'; vprpGp = 'ALL'; groupScoreQtrIdx = GROUP_DATA.scoring.default_idx;
         renderAll();
       } catch(e){
         showLandingError(`Could not load the District Tracker.`);
@@ -2433,7 +2544,7 @@
         GROUP_DATA = data; GROUP_PSEUDO_CLF = data.pseudo_clf;
         CURRENT_VIEW = 'state';
         showTracker();
-        currentTab='overview'; currentSub='profile'; finQtrIdx = GROUP_DATA.financial.quarters.length - 1; vprpYear = 2025; vprpGp = 'ALL';
+        currentTab='overview'; currentSub='profile'; finQtrIdx = GROUP_DATA.financial.quarters.length - 1; vprpYear = 'Cumulative'; vprpGp = 'ALL'; groupScoreQtrIdx = GROUP_DATA.scoring.default_idx;
         renderAll();
       } catch(e){
         showLandingError(`Could not load the Statewide Tracker.`);
